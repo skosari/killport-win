@@ -11,7 +11,7 @@ if /i "%~1"=="update" goto do_update
 if /i "%~1"=="ip" goto show_ip
 if /i "%~1"=="open" goto open_port
 if /i "%~1"=="close" goto close_port
-if /i "%~1"=="which" goto which_port
+if /i "%~1"=="status" goto status_port
 goto kill_port
 
 :: -------------------------------------------------------
@@ -32,7 +32,7 @@ echo   killport ^<port^>            kill whatever is running on that port
 echo   killport list              list all listening ports
 echo   killport open ^<port^>       open a port to external connections
 echo   killport close ^<port^>      close a port from external connections
-echo   killport which ^<port^>      show if a port is open or closed
+echo   killport status ^<port^>      show if a port is open or closed
 echo   killport ip                show IP addresses, DNS, and network info
 echo   killport update            update to the latest version
 echo.
@@ -110,8 +110,8 @@ echo Port %PORT% is now closed.
 goto end
 
 :: -------------------------------------------------------
-:which_port
-if "%~2"=="" ( echo Usage: killport which ^<port^> & goto end )
+:status_port
+if "%~2"=="" ( echo Usage: killport status ^<port^> & goto end )
 set PORT=%~2
 echo Port %PORT% status:
 echo.

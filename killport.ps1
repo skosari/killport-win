@@ -77,7 +77,7 @@ function Close-Port($p) {
     }
 }
 
-function Which-Port($p) {
+function Status-Port($p) {
     Write-Host "Port $p status:"
     Write-Host ""
 
@@ -159,7 +159,7 @@ if (-not $Command) {
     Write-Host "  killport list              list all listening ports"
     Write-Host "  killport open <port>       open a port to external connections"
     Write-Host "  killport close <port>      close a port from external connections"
-    Write-Host "  killport which <port>      show if a port is open or closed"
+    Write-Host "  killport status <port>      show if a port is open or closed"
     Write-Host "  killport ip                show IP addresses, DNS, and network info"
     Write-Host "  killport update            update to the latest version"
     Write-Host ""
@@ -184,9 +184,9 @@ switch ($Command.ToLower()) {
 
     "list" { List-Ports }
 
-    "which" {
-        if (-not $Port) { Write-Host "Usage: killport which <port>"; exit 1 }
-        Which-Port $Port
+    "status" {
+        if (-not $Port) { Write-Host "Usage: killport status <port>"; exit 1 }
+        Status-Port $Port
     }
 
     "ip" { Show-IP }
