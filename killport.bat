@@ -41,7 +41,7 @@ echo   killport ip                show IP addresses, DNS, and network info
 echo   killport update            update to the latest version
 echo.
 call :check_update
-goto list_ports
+goto end
 
 :: -------------------------------------------------------
 :check_update

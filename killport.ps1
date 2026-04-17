@@ -210,7 +210,6 @@ if (-not $Command) {
     Write-Host "  killport update            update to the latest version"
     Write-Host ""
     Check-Update
-    List-Ports
     exit 0
 }
 
