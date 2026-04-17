@@ -5,7 +5,7 @@ param(
     [string]$Port
 )
 
-$VERSION = "1.3.0"
+$VERSION = "1.4.0"
 $REPO = "skosari/killport-win"
 $RAW = "https://raw.githubusercontent.com/$REPO/main"
 
@@ -59,6 +59,33 @@ function Close-Port($p) {
         Write-Host "Port $p is now closed."
     } catch {
         Write-Error "Failed to close port. Try running as Administrator."
+    }
+}
+
+function Which-Port($p) {
+    Write-Host "Port $p status:"
+    Write-Host ""
+
+    # Firewall rule
+    $rule = Get-NetFirewallRule -DisplayName "killport-$p" -ErrorAction SilentlyContinue
+    if ($rule) {
+        Write-Host "  Firewall:  OPEN  (killport rule allows external access)"
+    } else {
+        Write-Host "  Firewall:  CLOSED  (no killport rule — external access blocked)"
+    }
+
+    # Actively listening
+    $conn = netstat -ano | Select-String ":$p\s" | Select-String /i "LISTENING"
+    if ($conn) {
+        $pid = (($conn | Select-Object -First 1) -split '\s+')[-1]
+        try {
+            $proc = Get-Process -Id $pid -ErrorAction Stop
+            Write-Host "  Listening: YES  (PID: $pid — $($proc.Name))"
+        } catch {
+            Write-Host "  Listening: YES  (PID: $pid)"
+        }
+    } else {
+        Write-Host "  Listening: NO  (nothing is running on this port)"
     }
 }
 
@@ -116,6 +143,7 @@ if (-not $Command) {
     Write-Host "  killport list              list all listening ports"
     Write-Host "  killport open <port>       open a port to external connections"
     Write-Host "  killport close <port>      close a port from external connections"
+    Write-Host "  killport which <port>      show if a port is open or closed"
     Write-Host "  killport ip                show IP addresses, DNS, and network info"
     Write-Host "  killport update            update to the latest version"
     Write-Host ""
@@ -139,6 +167,11 @@ switch ($Command.ToLower()) {
     }
 
     "list" { List-Ports }
+
+    "which" {
+        if (-not $Port) { Write-Host "Usage: killport which <port>"; exit 1 }
+        Which-Port $Port
+    }
 
     "ip" { Show-IP }
 

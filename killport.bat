@@ -1,7 +1,7 @@
 @echo off
 setlocal enabledelayedexpansion
 
-set VERSION=1.3.0
+set VERSION=1.4.0
 set REPO=skosari/killport-win
 set RAW=https://raw.githubusercontent.com/%REPO%/main
 
@@ -11,6 +11,7 @@ if /i "%~1"=="update" goto do_update
 if /i "%~1"=="ip" goto show_ip
 if /i "%~1"=="open" goto open_port
 if /i "%~1"=="close" goto close_port
+if /i "%~1"=="which" goto which_port
 goto kill_port
 
 :: -------------------------------------------------------
@@ -22,6 +23,7 @@ echo   killport ^<port^>            kill whatever is running on that port
 echo   killport list              list all listening ports
 echo   killport open ^<port^>       open a port to external connections
 echo   killport close ^<port^>      close a port from external connections
+echo   killport which ^<port^>      show if a port is open or closed
 echo   killport ip                show IP addresses, DNS, and network info
 echo   killport update            update to the latest version
 echo.
@@ -96,6 +98,33 @@ echo Closing port %PORT% from external connections...
 netsh advfirewall firewall delete rule name="killport-%PORT%-tcp" >nul 2>&1
 netsh advfirewall firewall delete rule name="killport-%PORT%-udp" >nul 2>&1
 echo Port %PORT% is now closed.
+goto end
+
+:: -------------------------------------------------------
+:which_port
+if "%~2"=="" ( echo Usage: killport which ^<port^> & goto end )
+set PORT=%~2
+echo Port %PORT% status:
+echo.
+set FW_OPEN=0
+netsh advfirewall firewall show rule name="killport-%PORT%-tcp" >nul 2>&1 && set FW_OPEN=1
+if "%FW_OPEN%"=="1" (
+  echo   Firewall:  OPEN  ^(killport rule allows external access^)
+) else (
+  echo   Firewall:  CLOSED  ^(no killport rule — external access blocked^)
+)
+set LISTENING=0
+for /f "tokens=5" %%a in ('netstat -ano ^| findstr ":%PORT% " ^| findstr /i "LISTENING"') do (
+  set LISTENING=1
+  set LPID=%%a
+)
+if "%LISTENING%"=="1" (
+  set LNAME=
+  for /f "tokens=1 delims=," %%p in ('tasklist /fi "PID eq %LPID%" /fo csv /nh 2^>nul') do set LNAME=%%~p
+  echo   Listening: YES  ^(PID: %LPID% — !LNAME!^)
+) else (
+  echo   Listening: NO  ^(nothing is running on this port^)
+)
 goto end
 
 :: -------------------------------------------------------
