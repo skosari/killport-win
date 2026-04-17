@@ -1,7 +1,35 @@
 param(
-    [Parameter(Mandatory=$true, Position=0)]
+    [Parameter(Mandatory=$false, Position=0)]
     [string]$Port
 )
+
+if (-not $Port) {
+    Write-Host "Usage: killport <port>"
+    Write-Host "       killport list"
+    exit 1
+}
+
+# --- list all listening ports ---
+if ($Port -eq "list") {
+    Write-Host "Listening ports:"
+    Write-Host ""
+    $connections = netstat -ano | Select-String "LISTENING"
+    $seen = @{}
+    foreach ($line in $connections) {
+        $parts = ($line -split '\s+') | Where-Object { $_ -ne '' }
+        $localAddr = $parts[1]
+        $pid = $parts[-1]
+        if ($seen[$pid + $localAddr]) { continue }
+        $seen[$pid + $localAddr] = $true
+        try {
+            $proc = Get-Process -Id $pid -ErrorAction Stop
+            Write-Host ("  {0,-25} {1,-10} {2}" -f $localAddr, $proc.Name, $pid)
+        } catch {
+            Write-Host ("  {0,-25} {1,-10} {2}" -f $localAddr, "(unknown)", $pid)
+        }
+    }
+    exit 0
+}
 
 if ($Port -notmatch '^\d+$' -or [int]$Port -lt 1 -or [int]$Port -gt 65535) {
     Write-Error "Error: '$Port' is not a valid port number (1-65535)"

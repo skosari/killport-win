@@ -44,7 +44,19 @@ This installs `killport.ps1` and a `killport.cmd` wrapper so you can use it from
 ## Usage
 
 ```powershell
-killport <port>
+killport <port>     # kill whatever is on that port
+killport list       # list all listening ports
+```
+
+### killport list
+
+```powershell
+killport list
+# Listening ports:
+#
+#   0.0.0.0:3000              node       1234
+#   0.0.0.0:5432              postgres   5678
+#   127.0.0.1:8080            python     9101
 ```
 
 > **Note:** If you get an execution policy error, run PowerShell as Administrator and execute:
