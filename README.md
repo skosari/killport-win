@@ -44,20 +44,10 @@ curl -fsSL https://raw.githubusercontent.com/skosari/killport-win/main/killport.
 ## Usage
 
 ```
-killport <port>     kill whatever is on that port
-killport list       list all listening ports
-killport update     update to the latest version
-```
-
-### killport list
-
-```
-killport list
-# Listening ports:
-#
-#   0.0.0.0:3000     node        1234
-#   0.0.0.0:5432     postgres    5678
-#   127.0.0.1:8080   python      9101
+killport              show instructions and list all listening ports
+killport <port>       kill whatever is on that port
+killport list         list all listening ports
+killport update       update to the latest version
 ```
 
 ---
