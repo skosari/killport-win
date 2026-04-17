@@ -1,204 +1,304 @@
 param(
-    [Parameter(Mandatory=$false, Position=0)]
-    [string]$Command,
-    [Parameter(Mandatory=$false, Position=1)]
-    [string]$Port
+    [Parameter(Mandatory=$false, Position=0)] [string]$Command,
+    [Parameter(Mandatory=$false, Position=1)] [string]$Port
 )
 
 $VERSION = "1.6.6"
-$REPO = "skosari/killport-win"
-$RAW = "https://raw.githubusercontent.com/$REPO/main"
+$REPO    = "skosari/killport-win"
+$RAW     = "https://raw.githubusercontent.com/$REPO/main"
+
+# ── helpers ─────────────────────────────────────────────────────────────────
+
+function wh($msg, $fg, [switch]$nl = $true) {
+    if ($fg) { Write-Host $msg -ForegroundColor $fg -NoNewline:(!$nl) }
+    else     { Write-Host $msg -NoNewline:(!$nl) }
+}
+
+function Get-RemoteVersion {
+    try { return (Invoke-WebRequest -Uri "$RAW/VERSION" -UseBasicParsing -TimeoutSec 2).Content.Trim() }
+    catch { return $null }
+}
+
+# ── banner ───────────────────────────────────────────────────────────────────
 
 function Show-Banner {
-    $lines = @(
-        "██╗  ██╗██╗██╗     ██╗     ██████╗  ██████╗ ██████╗ ████████╗",
-        "██║ ██╔╝██║██║     ██║     ██╔══██╗██╔═══██╗██╔══██╗╚══██╔══╝",
-        "█████╔╝ ██║██║     ██║     ██████╔╝██║   ██║██████╔╝   ██║   ",
-        "██╔═██╗ ██║██║     ██║     ██╔═══╝ ██║   ██║██╔══██╗   ██║   ",
-        "██║  ██╗██║███████╗███████╗██║     ╚██████╔╝██║  ██╗   ██║   ",
-        "╚═╝  ╚═╝╚═╝╚══════╝╚══════╝╚═╝      ╚═════╝ ╚═╝  ╚═╝   ╚═╝   "
-    )
-    foreach ($line in $lines) {
-        Write-Host $line -ForegroundColor Cyan
+    Write-Host ""
+    wh "██╗  ██╗██╗██╗     ██╗     ██████╗  ██████╗ ██████╗ ████████╗" Cyan
+    wh "██║ ██╔╝██║██║     ██║     ██╔══██╗██╔═══██╗██╔══██╗╚══██╔══╝" Cyan
+    wh "█████╔╝ ██║██║     ██║     ██████╔╝██║   ██║██████╔╝   ██║   " Cyan
+    wh "██╔═██╗ ██║██║     ██║     ██╔═══╝ ██║   ██║██╔══██╗   ██║   " Cyan
+    wh "██║  ██╗██║███████╗███████╗██║     ╚██████╔╝██║  ██╗   ██║   " Cyan
+    wh "╚═╝  ╚═╝╚═╝╚══════╝╚══════╝╚═╝      ╚═════╝ ╚═╝  ╚═╝   ╚═╝   " Cyan
+    Write-Host ""
+    wh "  https://github.com/skosari/killport-win" DarkGray
+    Write-Host ""
+}
+
+function Show-Version {
+    $remote = Get-RemoteVersion
+    if ($remote -and $remote -ne $VERSION) {
+        wh "  v$VERSION  " DarkGray -nl:$false; wh "→  v$remote available" Yellow -nl:$false; wh "  (run: killport update)" DarkGray
+    } else {
+        wh "  v$VERSION" DarkGray
     }
     Write-Host ""
 }
 
-function Check-Update {
-    try {
-        $remote = (Invoke-WebRequest -Uri "$RAW/VERSION" -UseBasicParsing -TimeoutSec 2).Content.Trim()
-        if ($remote -and $remote -ne $VERSION) {
-            Write-Host "  Update available: $VERSION -> $remote  (run: killport update)" -ForegroundColor Yellow
-            Write-Host ""
-        }
-    } catch {}
+function Write-Rule {
+    wh "  ────────────────────────────────────────────" Cyan
 }
+
+# ── list ─────────────────────────────────────────────────────────────────────
 
 function List-Ports {
-    Write-Host "Listening ports:"
     Write-Host ""
-    $connections = netstat -ano | Select-String "LISTENING"
+    wh "  Listening Ports" Cyan
+    Write-Rule
+    Write-Host ""
     $seen = @{}
-    foreach ($line in $connections) {
-        $parts = ($line -split '\s+') | Where-Object { $_ -ne '' }
-        $localAddr = $parts[1]; $pid = $parts[-1]
-        if ($seen[$pid + $localAddr]) { continue }
-        $seen[$pid + $localAddr] = $true
-        try {
-            $proc = Get-Process -Id $pid -ErrorAction Stop
-            Write-Host ("  {0,-25} {1,-10} {2}" -f $localAddr, $proc.Name, $pid)
-        } catch {
-            Write-Host ("  {0,-25} {1,-10} {2}" -f $localAddr, "(unknown)", $pid)
-        }
+    netstat -ano | Select-String "LISTENING" | ForEach-Object {
+        $p = ($_ -split '\s+') | Where-Object { $_ -ne '' }
+        $addr = $p[1]; $pid = $p[-1]
+        if ($seen["$addr-$pid"]) { return }
+        $seen["$addr-$pid"] = $true
+        try   { $name = (Get-Process -Id $pid -ErrorAction Stop).Name }
+        catch { $name = "(unknown)" }
+        wh "  " -nl:$false; wh "●" Green -nl:$false
+        Write-Host ("  {0,-28} " -f $addr) -NoNewline
+        wh $name DarkGray
     }
+    Write-Host ""
 }
 
-function Open-Port($p) {
-    Write-Host "Opening port $p to external connections..."
-    $ruleName = "killport-$p"
-    try {
-        New-NetFirewallRule -DisplayName $ruleName -Direction Inbound -Protocol TCP -LocalPort $p -Action Allow -ErrorAction Stop | Out-Null
-        New-NetFirewallRule -DisplayName "${ruleName}-udp" -Direction Inbound -Protocol UDP -LocalPort $p -Action Allow -ErrorAction Stop | Out-Null
-        Write-Host "Port $p is now open (TCP + UDP)."
-    } catch {
-        Write-Error "Failed to open port. Try running as Administrator."
+# ── ip ───────────────────────────────────────────────────────────────────────
+
+function Show-IP {
+    Write-Host ""
+    wh "  Network Addresses" Cyan
+    Write-Rule
+    Write-Host ""
+
+    $allAdapters = Get-NetAdapter -ErrorAction SilentlyContinue | Where-Object { $_.Status -eq 'Up' }
+    $withIPv4 = @()
+    foreach ($a in $allAdapters) {
+        $ip = Get-NetIPAddress -InterfaceIndex $a.InterfaceIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue |
+              Where-Object { $_.IPAddress -notlike '127.*' -and $_.IPAddress -notlike '169.254.*' } |
+              Select-Object -First 1
+        if ($ip) { $withIPv4 += [PSCustomObject]@{ Adapter=$a; IPv4=$ip.IPAddress } }
     }
+
+    # secondary adapters (dim)
+    for ($i = 1; $i -lt $withIPv4.Count; $i++) {
+        $d = $withIPv4[$i]
+        wh "  $($d.Adapter.Name)  ($($d.Adapter.InterfaceDescription))" DarkGray
+        wh "  ──> $($d.IPv4)" DarkGray
+        Write-Host ""
+    }
+
+    # primary adapter in box
+    if ($withIPv4.Count -gt 0) {
+        $pr = $withIPv4[0]
+        wh "  ┌────────────────────────────────────────" Cyan
+        wh "  │  " Cyan -nl:$false; Write-Host "$($pr.Adapter.Name)  " -NoNewline; wh "($($pr.Adapter.InterfaceDescription))" DarkGray
+        wh "  │  " Cyan -nl:$false; wh "IPv4:  " White -nl:$false; wh $pr.IPv4 Green
+        wh "  │  " Cyan -nl:$false; wh "MAC:   $($pr.Adapter.MacAddress)" DarkGray
+        wh "  └────────────────────────────────────────" Cyan
+        Write-Host ""
+    }
+
+    wh "  Default Gateway" White
+    wh "  ────────────────────────────────────" Cyan
+    Get-NetRoute -DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinue | ForEach-Object {
+        $iName = (Get-NetAdapter -InterfaceIndex $_.InterfaceIndex -ErrorAction SilentlyContinue).Name
+        wh "  $($_.NextHop)  " -nl:$false; wh "($iName)" DarkGray
+    }
+    Write-Host ""
+
+    wh "  DNS Servers" White
+    wh "  ────────────────────────────────────" Cyan
+    $shown = @{}
+    Get-DnsClientServerAddress -ErrorAction SilentlyContinue | Where-Object { $_.ServerAddresses } | ForEach-Object {
+        $iAlias = $_.InterfaceAlias
+        $_.ServerAddresses | ForEach-Object {
+            if (-not $shown[$_]) { $shown[$_] = $true; wh "  $_  " -nl:$false; wh "($iAlias)" DarkGray }
+        }
+    }
+    Write-Host ""
+
+    wh "  Firewall-managed ports (killport)" White
+    wh "  ────────────────────────────────────" Cyan
+    $rules = Get-NetFirewallRule -DisplayName "killport-*" -ErrorAction SilentlyContinue | Where-Object { $_.DisplayName -notmatch "udp$" }
+    if ($rules) {
+        $rules | ForEach-Object { $f = $_ | Get-NetFirewallPortFilter; wh "  $($f.LocalPort)" -nl:$false; wh "  ($($_.Direction))" DarkGray }
+    } else { wh "  None" DarkGray }
+    Write-Host ""
+}
+
+# ── open / close ──────────────────────────────────────────────────────────────
+
+function Open-Port($p) {
+    Write-Host "Opening port " -NoNewline; wh $p White -nl:$false; Write-Host " to external connections..."
+    try {
+        New-NetFirewallRule -DisplayName "killport-$p"     -Direction Inbound -Protocol TCP -LocalPort $p -Action Allow -ErrorAction Stop | Out-Null
+        New-NetFirewallRule -DisplayName "killport-$p-udp" -Direction Inbound -Protocol UDP -LocalPort $p -Action Allow -ErrorAction Stop | Out-Null
+        wh "Port $p is now open (TCP + UDP)." Green
+    } catch { wh "Failed to open port. Try running as Administrator." Yellow }
 }
 
 function Close-Port($p) {
-    Write-Host "Closing port $p from external connections..."
-    $ruleName = "killport-$p"
-    try {
-        Remove-NetFirewallRule -DisplayName $ruleName -ErrorAction SilentlyContinue
-        Remove-NetFirewallRule -DisplayName "${ruleName}-udp" -ErrorAction SilentlyContinue
-        Write-Host "Port $p is now closed."
-    } catch {
-        Write-Error "Failed to close port. Try running as Administrator."
-    }
+    Write-Host "Closing port " -NoNewline; wh $p White -nl:$false; Write-Host " from external connections..."
+    Remove-NetFirewallRule -DisplayName "killport-$p"     -ErrorAction SilentlyContinue
+    Remove-NetFirewallRule -DisplayName "killport-$p-udp" -ErrorAction SilentlyContinue
+    wh "Port $p is now closed." DarkGray
 }
 
+# ── status ───────────────────────────────────────────────────────────────────
+
 function Status-Port($p) {
-    Write-Host "Port $p status:"
     Write-Host ""
-
-    # Firewall rule
-    $rule = Get-NetFirewallRule -DisplayName "killport-$p" -ErrorAction SilentlyContinue
-    if ($rule) {
-        Write-Host "  Firewall:  OPEN  (killport rule allows external access)"
+    Write-Host "  Port " -NoNewline; wh $p White -nl:$false; Write-Host " status:"
+    Write-Host ""
+    if (Get-NetFirewallRule -DisplayName "killport-$p" -ErrorAction SilentlyContinue) {
+        wh "  Firewall:  " -nl:$false; wh "OPEN" Green -nl:$false; Write-Host "  (killport rule allows external access)"
     } else {
-        Write-Host "  Firewall:  CLOSED  (no killport rule — external access blocked)"
+        wh "  Firewall:  " -nl:$false; wh "CLOSED" DarkGray -nl:$false; Write-Host "  (no killport rule — external access blocked)"
     }
-
-    # Actively listening
     $conn = netstat -ano | Select-String ":$p\s" | Select-String /i "LISTENING"
     if ($conn) {
         $pid = (($conn | Select-Object -First 1) -split '\s+')[-1]
-        try {
-            $proc = Get-Process -Id $pid -ErrorAction Stop
-            Write-Host "  Listening: YES  (PID: $pid — $($proc.Name))"
-        } catch {
-            Write-Host "  Listening: YES  (PID: $pid)"
-        }
+        try   { $name = (Get-Process -Id $pid -ErrorAction Stop).Name }
+        catch { $name = "?" }
+        wh "  Listening: " -nl:$false; wh "YES" Green -nl:$false; Write-Host "  (PID: $pid — $name)"
     } else {
-        Write-Host "  Listening: NO  (nothing is running on this port)"
+        wh "  Listening: " -nl:$false; wh "NO" DarkGray -nl:$false; Write-Host "  (nothing is running on this port)"
     }
+    Write-Host ""
 }
+
+# ── openports ────────────────────────────────────────────────────────────────
 
 function Open-Ports {
-    Write-Host "Open ports (allowed external access via killport):"
     Write-Host ""
-    $rules = Get-NetFirewallRule -DisplayName "killport-*" -ErrorAction SilentlyContinue |
-        Where-Object { $_.DisplayName -notmatch "udp$" }
-    if (-not $rules) { Write-Host "  None — no ports have been opened with killport."; return }
-    foreach ($rule in $rules) {
-        $filter = $rule | Get-NetFirewallPortFilter
-        $port = $filter.LocalPort
-        $conn = netstat -ano | Select-String ":$port\s" | Select-String /i "LISTENING"
-        if ($conn) {
-            $pid = (($conn | Select-Object -First 1) -split '\s+')[-1]
-            try { $name = (Get-Process -Id $pid -ErrorAction Stop).Name } catch { $name = "unknown" }
-            Write-Host ("  {0,-8}  listening  ({1})" -f $port, $name)
-        } else {
-            Write-Host ("  {0,-8}  not listening" -f $port)
+    wh "  Firewall-Open Ports" Cyan -nl:$false; wh "  (external access via killport)" DarkGray
+    Write-Rule
+    Write-Host ""
+    $rules = Get-NetFirewallRule -DisplayName "killport-*" -ErrorAction SilentlyContinue | Where-Object { $_.DisplayName -notmatch "udp$" }
+    if (-not $rules) {
+        wh "  No ports are currently open to external access." DarkGray
+        wh "  Run: killport open <port>" DarkGray
+    } else {
+        $oc = 0; $lc = 0
+        foreach ($rule in $rules) {
+            $port = ($rule | Get-NetFirewallPortFilter).LocalPort
+            $oc++
+            $conn = netstat -ano | Select-String ":$port\s" | Select-String /i "LISTENING"
+            if ($conn) {
+                $lc++
+                $pid = (($conn | Select-Object -First 1) -split '\s+')[-1]
+                try { $name = (Get-Process -Id $pid -ErrorAction Stop).Name } catch { $name = "unknown" }
+                wh "  " -nl:$false; wh "●" Green -nl:$false
+                Write-Host ("  {0,-8}  " -f $port) -NoNewline; wh "listening" Green -nl:$false; wh "   $name" DarkGray
+            } else {
+                wh "  " -nl:$false; wh "○" Yellow -nl:$false
+                Write-Host ("  {0,-8}  " -f $port) -NoNewline; wh "not listening" DarkGray
+            }
         }
+        Write-Host ""
+        Write-Rule
+        wh "  $oc port(s) open  ·  $lc listening" DarkGray
     }
+    Write-Host ""
 }
+
+# ── closedports ──────────────────────────────────────────────────────────────
 
 function Closed-Ports {
-    Write-Host "Closed ports (listening locally, no external access):"
+    Write-Host ""
+    wh "  Locally-Listening Ports" Cyan -nl:$false; wh "  (no external access)" DarkGray
+    Write-Rule
     Write-Host ""
     $openPorts = @()
-    $rules = Get-NetFirewallRule -DisplayName "killport-*" -ErrorAction SilentlyContinue |
-        Where-Object { $_.DisplayName -notmatch "udp$" }
-    foreach ($rule in $rules) {
-        $openPorts += ($rule | Get-NetFirewallPortFilter).LocalPort
-    }
-    $connections = netstat -ano | Select-String "LISTENING"
-    $seen = @{}
-    foreach ($line in $connections) {
-        $parts = ($line -split '\s+') | Where-Object { $_ -ne '' }
+    Get-NetFirewallRule -DisplayName "killport-*" -ErrorAction SilentlyContinue | Where-Object { $_.DisplayName -notmatch "udp$" } |
+        ForEach-Object { $openPorts += ($_ | Get-NetFirewallPortFilter).LocalPort }
+    $seen = @{}; $count = 0
+    netstat -ano | Select-String "LISTENING" | ForEach-Object {
+        $parts = ($_ -split '\s+') | Where-Object { $_ -ne '' }
         $addr = $parts[1]; $pid = $parts[-1]
         $port = ($addr -split ':')[-1]
-        if ($seen[$port]) { continue }
+        if ($seen[$port]) { return }
         $seen[$port] = $true
         if ($openPorts -notcontains $port) {
+            $count++
             try { $name = (Get-Process -Id $pid -ErrorAction Stop).Name } catch { $name = "unknown" }
-            Write-Host ("  {0,-8}  closed  ({1})" -f $port, $name)
+            wh "  " -nl:$false; wh "◆" Yellow -nl:$false
+            Write-Host ("  {0,-8}  " -f $port) -NoNewline; wh "local only   $name" DarkGray
         }
     }
+    Write-Host ""
+    Write-Rule
+    wh "  $count port(s) listening locally  ·  no external access" DarkGray
+    Write-Host ""
 }
 
-function Show-IP {
-    Write-Host "Network Interfaces"
-    Write-Host "────────────────────────────────────"
-    $adapters = Get-NetAdapter | Where-Object { $_.Status -eq "Up" }
-    foreach ($adapter in $adapters) {
-        $addrs = Get-NetIPAddress -InterfaceIndex $adapter.InterfaceIndex -ErrorAction SilentlyContinue
-        Write-Host ""
-        Write-Host "  Interface: $($adapter.Name)  ($($adapter.InterfaceDescription))"
-        Write-Host "  MAC:       $($adapter.MacAddress)"
-        foreach ($addr in $addrs) {
-            Write-Host ("  {0,-8}  {1}/{2}" -f $addr.AddressFamily, $addr.IPAddress, $addr.PrefixLength)
+# ── kill port ────────────────────────────────────────────────────────────────
+
+function Kill-Port($p) {
+    $conns = netstat -ano | Select-String ":$p\s" | Select-String /i "LISTENING"
+    if (-not $conns) { wh "Nothing running on port $p" DarkGray; return }
+    $pids = $conns | ForEach-Object { ($_ -split '\s+')[-1] } | Sort-Object -Unique
+    Write-Host ""
+    Write-Host "  Port " -NoNewline; wh $p White -nl:$false; Write-Host " is in use:"
+    Write-Host ""
+    foreach ($pid in $pids) {
+        try {
+            $proc = Get-Process -Id $pid -ErrorAction Stop
+            wh "  PID:  " White -nl:$false; Write-Host " $($proc.Id)"
+            wh "  Name: " White -nl:$false; Write-Host " $($proc.Name)"
+            Write-Host ""
+        } catch {
+            wh "  PID:  " White -nl:$false; wh " $pid  (info unavailable)" DarkGray; Write-Host ""
         }
     }
-
-    Write-Host ""
-    Write-Host "Default Gateway"
-    Write-Host "────────────────────────────────────"
-    $gateways = Get-NetRoute -DestinationPrefix "0.0.0.0/0" -ErrorAction SilentlyContinue
-    foreach ($gw in $gateways) {
-        Write-Host "  $($gw.NextHop)  (via $((Get-NetAdapter -InterfaceIndex $gw.InterfaceIndex).Name))"
+    $failed = $false
+    foreach ($pid in $pids) {
+        try { Stop-Process -Id $pid -Force -ErrorAction Stop }
+        catch { wh "Could not kill PID $pid — try running as Administrator." Yellow; $failed = $true }
     }
-
-    Write-Host ""
-    Write-Host "DNS Servers"
-    Write-Host "────────────────────────────────────"
-    $dnsServers = Get-DnsClientServerAddress -ErrorAction SilentlyContinue | Where-Object { $_.ServerAddresses }
-    foreach ($dns in $dnsServers) {
-        $dns.ServerAddresses | ForEach-Object { Write-Host "  $_  ($($dns.InterfaceAlias))" }
-    }
-
-    Write-Host ""
-    Write-Host "Firewall-managed ports (killport)"
-    Write-Host "────────────────────────────────────"
-    $rules = Get-NetFirewallRule -DisplayName "killport-*" -ErrorAction SilentlyContinue
-    if ($rules) {
-        $rules | ForEach-Object {
-            $filter = $_ | Get-NetFirewallPortFilter
-            Write-Host ("  Port {0,-8} {1,-6} {2}" -f $filter.LocalPort, $filter.Protocol, $_.Direction)
-        }
-    } else {
-        Write-Host "  None"
-    }
+    if (-not $failed) { wh "Killed." Green }
 }
 
-# -------------------------------------------------------
+# ── update ───────────────────────────────────────────────────────────────────
+
+function Update-Killport {
+    Write-Host "Checking for updates..."
+    $remote = Get-RemoteVersion
+    if (-not $remote) { wh "Could not reach GitHub." Yellow; exit 1 }
+    if ($remote -eq $VERSION) { wh "Already up to date (v$VERSION)" Green; exit 0 }
+    Write-Host "Updating $VERSION " -NoNewline; wh "→" Yellow -nl:$false; Write-Host " $remote..."
+
+    # Update bat wrapper in System32
+    $batPath = (Get-Command killport -ErrorAction SilentlyContinue).Source
+    if ($batPath -and $batPath.EndsWith('.bat')) {
+        $content = (Invoke-WebRequest -Uri "$RAW/killport.bat" -UseBasicParsing).Content
+        $content = $content -replace "`r`n","`n" -replace "`n","`r`n"
+        [System.IO.File]::WriteAllText($batPath, $content, [System.Text.Encoding]::UTF8)
+    }
+
+    # Update this ps1 implementation
+    $ps1Path = $PSCommandPath
+    if (-not $ps1Path) { $ps1Path = "C:\ProgramData\killport\killport.ps1" }
+    $content = (Invoke-WebRequest -Uri "$RAW/killport.ps1" -UseBasicParsing).Content
+    [System.IO.File]::WriteAllText($ps1Path, $content, [System.Text.Encoding]::UTF8)
+
+    wh "Updated to v$remote. Run killport to confirm." Green
+}
+
+# ── main ─────────────────────────────────────────────────────────────────────
 
 if (-not $Command) {
     Show-Banner
-    Write-Host "  v$VERSION"
-    Write-Host ""
-    Write-Host "  killport                   show this help and list listening ports"
+    Show-Version
+    Write-Host "  killport                   show this help"
     Write-Host "  killport <port>            kill whatever is running on that port"
     Write-Host "  killport list              list all listening ports"
     Write-Host "  killport open <port>       open a port to external connections"
@@ -206,72 +306,26 @@ if (-not $Command) {
     Write-Host "  killport openports         show all ports open to external access"
     Write-Host "  killport closedports       show all listening ports with no external access"
     Write-Host "  killport status <port>     show if a port is open or closed"
-    Write-Host "  killport ip                show IP addresses, DNS, and network info"
+    Write-Host "  killport ip                show IP addresses and network info"
     Write-Host "  killport update            update to the latest version"
     Write-Host ""
-    Check-Update
     exit 0
 }
 
 switch ($Command.ToLower()) {
-
-    "update" {
-        Write-Host "Checking for updates..."
-        try { $remote = (Invoke-WebRequest -Uri "$RAW/VERSION" -UseBasicParsing -TimeoutSec 5).Content.Trim() }
-        catch { Write-Host "Could not reach GitHub."; exit 1 }
-        if ($remote -eq $VERSION) { Write-Host "Already up to date (v$VERSION)"; exit 0 }
-        Write-Host "Updating $VERSION -> $remote..."
-        $installPath = (Get-Command killport -ErrorAction SilentlyContinue).Source
-        if (-not $installPath) { $installPath = "$PSScriptRoot\killport.ps1" }
-        Invoke-WebRequest -Uri "$RAW/killport.ps1" -OutFile $installPath -UseBasicParsing
-        Write-Host "Updated to v$remote. Run killport to confirm."
-    }
-
-    "list" { List-Ports }
-
-    "openports" { Open-Ports }
-
+    "update"      { Update-Killport }
+    "list"        { List-Ports }
+    "openports"   { Open-Ports }
     "closedports" { Closed-Ports }
-
-    "status" {
-        if (-not $Port) { Write-Host "Usage: killport status <port>"; exit 1 }
-        Status-Port $Port
-    }
-
-    "ip" { Show-IP }
-
-    "open" {
-        if (-not $Port) { Write-Host "Usage: killport open <port>"; exit 1 }
-        Open-Port $Port
-    }
-
-    "close" {
-        if (-not $Port) { Write-Host "Usage: killport close <port>"; exit 1 }
-        Close-Port $Port
-    }
-
+    "ip"          { Show-IP }
+    "status"      { if (-not $Port) { Write-Host "Usage: killport status <port>" } else { Status-Port $Port } }
+    "open"        { if (-not $Port) { Write-Host "Usage: killport open <port>" } else { Open-Port $Port } }
+    "close"       { if (-not $Port) { Write-Host "Usage: killport close <port>" } else { Close-Port $Port } }
     default {
         $p = $Command
         if ($p -notmatch '^\d+$' -or [int]$p -lt 1 -or [int]$p -gt 65535) {
-            Write-Error "Error: '$p' is not a valid port number (1-65535)"; exit 1
+            wh "Error: '$p' is not a valid port number (1-65535)" Yellow; exit 1
         }
-        $connections = netstat -ano | Select-String ":$p\s" | Select-String /i "LISTENING"
-        if (-not $connections) { Write-Host "Nothing running on port $p"; exit 0 }
-        $pids = $connections | ForEach-Object { ($_ -split '\s+')[-1] } | Sort-Object -Unique
-        Write-Host "Port $p is in use:"; Write-Host ""
-        foreach ($pid in $pids) {
-            try {
-                $proc = Get-Process -Id $pid -ErrorAction Stop
-                Write-Host "  PID:   $($proc.Id)"
-                Write-Host "  Name:  $($proc.Name)"
-                Write-Host "  Path:  $($proc.Path)"
-                Write-Host ""
-            } catch { Write-Host "  PID:   $pid (info unavailable)"; Write-Host "" }
-        }
-        foreach ($pid in $pids) {
-            try { Stop-Process -Id $pid -Force -ErrorAction Stop }
-            catch { Write-Warning "Could not kill PID $pid" }
-        }
-        Write-Host "Killed."
+        Kill-Port $p
     }
 }
