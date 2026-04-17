@@ -15,8 +15,14 @@ function wh($msg, $fg, [switch]$nl = $true) {
 }
 
 function Get-RemoteVersion {
-    try { return (Invoke-WebRequest -Uri "$RAW/VERSION" -UseBasicParsing -TimeoutSec 2).Content.Trim() }
-    catch { return $null }
+    try {
+        $wc = New-Object System.Net.WebClient
+        $wc.Headers.Add("Cache-Control", "no-cache")
+        return $wc.DownloadString("$RAW/VERSION").Trim()
+    } catch {
+        try { return (Invoke-WebRequest -Uri "$RAW/VERSION" -UseBasicParsing -TimeoutSec 5).Content.Trim() }
+        catch { return $null }
+    }
 }
 
 # ── banner ───────────────────────────────────────────────────────────────────
