@@ -22,10 +22,16 @@
 
 ## Install
 
-Run in an **elevated PowerShell** (Run as Administrator):
+**Option 1 — PowerShell** *(elevated — Run as Administrator)*
 
 ```powershell
 irm https://raw.githubusercontent.com/skosari/killport-win/main/install.ps1 | iex
+```
+
+**Option 2 — Command Prompt (CMD)** *(elevated — Run as Administrator)*
+
+```cmd
+powershell -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.com/skosari/killport-win/main/install.ps1 | iex"
 ```
 
 Installs `killport.bat` to `System32` (always in PATH for CMD and PowerShell) and the implementation to `C:\ProgramData\killport\`.
