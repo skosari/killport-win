@@ -159,16 +159,10 @@ Already up to date (v1.6.6)
 Run in an **elevated PowerShell** (Run as Administrator):
 
 ```powershell
-Remove-Item "$env:SystemRoot\System32\killport.bat" -Force -ErrorAction SilentlyContinue
-Remove-Item "C:\ProgramData\killport" -Recurse -Force -ErrorAction SilentlyContinue
+irm https://raw.githubusercontent.com/skosari/killport-win/main/uninstall.ps1 | iex
 ```
 
-Or from an **elevated Command Prompt**:
-
-```cmd
-del %SystemRoot%\System32\killport.bat
-rmdir /s /q "%ProgramData%\killport"
-```
+Removes the binary, implementation files, and all firewall rules created by `killport open`.
 
 ---
 
