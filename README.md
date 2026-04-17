@@ -48,6 +48,7 @@ Installs `killport.bat` to `System32` (always in PATH for CMD and PowerShell) an
 | `killport status <port>` | Show if a port is open or closed |
 | `killport ip` | Show IP addresses, DNS, and network info |
 | `killport update` | Update to the latest version |
+| `killport uninstall` | Remove killport and all firewall rules |
 
 ---
 
@@ -150,6 +151,15 @@ Port 8080 is now closed.
 ```
 Checking for updates...
 Already up to date (v1.6.6)
+```
+
+### `killport uninstall`
+```
+Uninstalling killport...
+  Removed 4 firewall rule(s)
+  Removed C:\Windows\System32\killport.bat
+  Removed C:\ProgramData\killport
+killport uninstalled.
 ```
 
 ---

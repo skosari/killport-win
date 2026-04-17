@@ -293,6 +293,27 @@ function Update-Killport {
     wh "Updated to v$remote. Run killport to confirm." Green
 }
 
+# ── uninstall ─────────────────────────────────────────────────────────────────
+
+function Uninstall-Killport {
+    $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+    if (-not $isAdmin) {
+        wh "Re-run as Administrator: right-click PowerShell → Run as administrator" Yellow; exit 1
+    }
+    Write-Host "Uninstalling killport..."
+    $rules = Get-NetFirewallRule -DisplayName "killport-*" -ErrorAction SilentlyContinue
+    if ($rules) { $rules | Remove-NetFirewallRule; wh "  Removed $($rules.Count) firewall rule(s)" DarkGray }
+    $bat = "$env:SystemRoot\System32\killport.bat"
+    if (Test-Path $bat) { Remove-Item $bat -Force; wh "  Removed $bat" DarkGray }
+    $impl = "$env:ProgramData\killport"
+    if (Test-Path $impl) { Remove-Item $impl -Recurse -Force; wh "  Removed $impl" DarkGray }
+    @(
+        "$env:USERPROFILE\AppData\Local\Microsoft\WindowsApps\killport.ps1",
+        "$env:USERPROFILE\AppData\Local\Microsoft\WindowsApps\killport.bat"
+    ) | Where-Object { Test-Path $_ } | ForEach-Object { Remove-Item $_ -Force; wh "  Removed $_" DarkGray }
+    wh "killport uninstalled." Green
+}
+
 # ── main ─────────────────────────────────────────────────────────────────────
 
 if (-not $Command) {
@@ -308,12 +329,14 @@ if (-not $Command) {
     Write-Host "  killport status <port>     show if a port is open or closed"
     Write-Host "  killport ip                show IP addresses and network info"
     Write-Host "  killport update            update to the latest version"
+    Write-Host "  killport uninstall         remove killport and all firewall rules"
     Write-Host ""
     exit 0
 }
 
 switch ($Command.ToLower()) {
     "update"      { Update-Killport }
+    "uninstall"   { Uninstall-Killport }
     "list"        { List-Ports }
     "openports"   { Open-Ports }
     "closedports" { Closed-Ports }
