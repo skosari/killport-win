@@ -20,23 +20,7 @@
 
 ---
 
-```
-> killport 3000
-
-Port 3000 is in use:
-
-  PID:   48291
-  Name:  node
-  Addr:  0.0.0.0:3000
-
-Killed.
-```
-
----
-
 ## Install
-
-**Option 1 — PowerShell installer** *(recommended)*
 
 Run in an **elevated PowerShell** (Run as Administrator):
 
@@ -44,18 +28,9 @@ Run in an **elevated PowerShell** (Run as Administrator):
 irm https://raw.githubusercontent.com/skosari/killport-win/main/install.ps1 | iex
 ```
 
-Installs both `killport.ps1` (PowerShell) and `killport.bat` (CMD) to your PATH.
+Installs `killport.bat` to `System32` (always in PATH for CMD and PowerShell) and the implementation to `C:\ProgramData\killport\`.
 
-**Option 2 — CMD only** *(no PowerShell required)*
-
-Run in an **elevated Command Prompt** (Run as Administrator):
-
-```cmd
-curl -fsSL https://raw.githubusercontent.com/skosari/killport-win/main/killport.bat ^
-  -o "%USERPROFILE%\AppData\Local\Microsoft\WindowsApps\killport.bat"
-```
-
-> Requires Windows 10 or later (curl is built in).
+> Requires Windows 10 or later.
 
 ---
 
@@ -70,33 +45,136 @@ curl -fsSL https://raw.githubusercontent.com/skosari/killport-win/main/killport.
 | `killport close <port>` | Close a port from external connections |
 | `killport openports` | Show all ports open to external access |
 | `killport closedports` | Show all listening ports with no external access |
-| `killport ports` | Inspect all ports with live firewall status |
-| `killport opencheck <ip>` | Probe an IP to verify external reachability |
 | `killport status <port>` | Show if a port is open or closed |
 | `killport ip` | Show IP addresses, DNS, and network info |
 | `killport update` | Update to the latest version |
 
 ---
 
-## Notes
+## Examples
 
-**PowerShell execution policy** — if you get a policy error, run:
+### `killport 3000`
+```
+  Port 3000 is in use:
 
-```powershell
-Set-ExecutionPolicy RemoteSigned -Scope CurrentUser
+  PID:   48291
+  Name:  node
+  Addr:  0.0.0.0:3000
+
+Killed.
 ```
 
-**Firewall rules** — `killport open` and `killport close` manage Windows Firewall inbound rules. Run as Administrator for firewall commands.
+### `killport list`
+```
+  Listening Ports
+  ────────────────────────────────────────────
+
+  ●  0.0.0.0:3000               node
+  ●  0.0.0.0:5432               postgres
+  ●  0.0.0.0:8080               nginx
+  ●  127.0.0.1:6379             redis-server
+```
+
+### `killport open 8080`
+```
+Opening port 8080 to external connections...
+Port 8080 is now open (TCP + UDP).
+```
+
+### `killport close 8080`
+```
+Closing port 8080 from external connections...
+Port 8080 is now closed.
+```
+
+### `killport openports`
+```
+  Firewall-Open Ports  (external access via killport)
+  ────────────────────────────────────────────
+
+  ●  80        listening   nginx
+  ●  443       listening   nginx
+  ○  8080      not listening
+
+  ────────────────────────────────────────────
+  3 port(s) open  ·  2 listening
+```
+
+### `killport closedports`
+```
+  Locally-Listening Ports  (no external access)
+  ────────────────────────────────────────────
+
+  ◆  3000      local only   node
+  ◆  5432      local only   postgres
+  ◆  6379      local only   redis-server
+
+  ────────────────────────────────────────────
+  3 port(s) listening locally  ·  no external access
+```
+
+### `killport status 3000`
+```
+  Port 3000 status:
+
+  Firewall:  CLOSED  (no killport rule — external access blocked)
+  Listening: YES  (PID: 48291 — node)
+```
+
+### `killport ip`
+```
+  Network Addresses
+  ────────────────────────────────────────────
+
+  ┌────────────────────────────────────────
+  │  Ethernet  (Realtek Gaming 2.5GbE Family Controller)
+  │  IPv4:  192.168.1.42
+  │  MAC:   10-FF-E0-23-9B-44
+  └────────────────────────────────────────
+
+  Default Gateway
+  ────────────────────────────────────
+  192.168.1.1
+
+  DNS Servers
+  ────────────────────────────────────
+  8.8.8.8  (Ethernet)
+  8.8.4.4  (Ethernet)
+
+  Firewall-managed ports (killport)
+  ────────────────────────────────────
+  None
+```
+
+### `killport update`
+```
+Checking for updates...
+Already up to date (v1.6.6)
+```
 
 ---
 
-## Update
+## Uninstall
+
+Run in an **elevated PowerShell** (Run as Administrator):
 
 ```powershell
-killport update
+Remove-Item "$env:SystemRoot\System32\killport.bat" -Force -ErrorAction SilentlyContinue
+Remove-Item "C:\ProgramData\killport" -Recurse -Force -ErrorAction SilentlyContinue
 ```
 
-Self-updates by pulling the latest script from this repo. Version is checked via the GitHub API — no CDN caching issues.
+Or from an **elevated Command Prompt**:
+
+```cmd
+del %SystemRoot%\System32\killport.bat
+rmdir /s /q "%ProgramData%\killport"
+```
+
+---
+
+## Notes
+
+**Firewall rules** — `killport open` and `killport close` manage Windows Firewall inbound rules. Run as Administrator for firewall commands.
 
 ---
 
