@@ -11,7 +11,7 @@
 
 **Kill whatever is running on a port — Windows**
 
-[![Version](https://img.shields.io/badge/version-1.6.6-00b4d8?style=flat-square)](#)
+[![Version](https://img.shields.io/badge/version-1.6.7-00b4d8?style=flat-square)](#)
 [![Platform](https://img.shields.io/badge/platform-Windows-00b4d8?style=flat-square&logo=windows&logoColor=white)](#)
 [![Shell](https://img.shields.io/badge/shell-PowerShell%20%2F%20CMD-00b4d8?style=flat-square&logo=powershell&logoColor=white)](#)
 [![License](https://img.shields.io/badge/license-MIT-00b4d8?style=flat-square)](#)

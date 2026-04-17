@@ -3,7 +3,7 @@ param(
     [Parameter(Mandatory=$false, Position=1)] [string]$Port
 )
 
-$VERSION = "1.6.6"
+$VERSION = "1.6.7"
 $REPO    = "skosari/killport-win"
 $RAW     = "https://raw.githubusercontent.com/$REPO/main"
 
