@@ -1,7 +1,7 @@
 @echo off
 setlocal enabledelayedexpansion
 
-set VERSION=1.6.0
+set VERSION=1.6.1
 set REPO=skosari/killport-win
 set RAW=https://raw.githubusercontent.com/%REPO%/main
 

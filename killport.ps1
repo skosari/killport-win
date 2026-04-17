@@ -5,7 +5,7 @@ param(
     [string]$Port
 )
 
-$VERSION = "1.6.0"
+$VERSION = "1.6.1"
 $REPO = "skosari/killport-win"
 $RAW = "https://raw.githubusercontent.com/$REPO/main"
 
