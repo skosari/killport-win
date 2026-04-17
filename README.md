@@ -44,10 +44,13 @@ curl -fsSL https://raw.githubusercontent.com/skosari/killport-win/main/killport.
 ## Usage
 
 ```
-killport              show instructions and list all listening ports
-killport <port>       kill whatever is on that port
-killport list         list all listening ports
-killport update       update to the latest version
+killport                   show this help and list listening ports
+killport <port>            kill whatever is running on that port
+killport list              list all listening ports
+killport open <port>       open a port to external connections
+killport close <port>      close a port from external connections
+killport ip                show IP addresses, DNS, and network info
+killport update            update to the latest version
 ```
 
 ---
