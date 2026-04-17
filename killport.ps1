@@ -40,9 +40,15 @@ function Show-Banner {
     Write-Host ""
 }
 
+function Compare-Version($a, $b) {
+    $av = [version]($a -replace '[^0-9.]','')
+    $bv = [version]($b -replace '[^0-9.]','')
+    return $av.CompareTo($bv)
+}
+
 function Show-Version {
     $remote = Get-RemoteVersion
-    if ($remote -and $remote -ne $VERSION) {
+    if ($remote -and (Compare-Version $remote $VERSION) -gt 0) {
         wh "  v$VERSION  " DarkGray -nl:$false; wh "→  v$remote available" Yellow -nl:$false; wh "  (run: killport update)" DarkGray
     } else {
         wh "  v$VERSION" DarkGray
@@ -279,7 +285,7 @@ function Update-Killport {
     Write-Host "Checking for updates..."
     $remote = Get-RemoteVersion
     if (-not $remote) { wh "Could not reach GitHub." Yellow; exit 1 }
-    if ($remote -eq $VERSION) { wh "Already up to date (v$VERSION)" Green; exit 0 }
+    if ((Compare-Version $remote $VERSION) -le 0) { wh "Already up to date (v$VERSION)" Green; exit 0 }
     Write-Host "Updating $VERSION " -NoNewline; wh "→" Yellow -nl:$false; Write-Host " $remote..."
 
     # Update bat wrapper in System32
