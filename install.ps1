@@ -1,20 +1,26 @@
 $REPO = "skosari/killport-win"
-$RAW_URL = "https://raw.githubusercontent.com/$REPO/main/killport.ps1"
+$RAW = "https://raw.githubusercontent.com/$REPO/main"
 $INSTALL_DIR = "$env:USERPROFILE\AppData\Local\Microsoft\WindowsApps"
-$DEST = "$INSTALL_DIR\killport.ps1"
 
 Write-Host "Installing killport..."
 
+# PowerShell version
 try {
-    Invoke-WebRequest -Uri $RAW_URL -OutFile $DEST -UseBasicParsing
+    Invoke-WebRequest -Uri "$RAW/killport.ps1" -OutFile "$INSTALL_DIR\killport.ps1" -UseBasicParsing
 } catch {
-    Write-Error "Failed to download killport: $_"
+    Write-Error "Failed to download killport.ps1: $_"
     exit 1
 }
 
-# Create a wrapper .cmd so you can just type `killport` in any terminal
-$CMD_DEST = "$INSTALL_DIR\killport.cmd"
-Set-Content -Path $CMD_DEST -Value "@powershell -ExecutionPolicy Bypass -File `"$DEST`" %*"
+# CMD/batch version (works in Command Prompt without PowerShell)
+try {
+    Invoke-WebRequest -Uri "$RAW/killport.bat" -OutFile "$INSTALL_DIR\killport.bat" -UseBasicParsing
+} catch {
+    Write-Error "Failed to download killport.bat: $_"
+    exit 1
+}
 
 Write-Host "killport installed."
-Write-Host "Try: killport 8080"
+Write-Host ""
+Write-Host "  PowerShell:       killport 8080"
+Write-Host "  Command Prompt:   killport 8080"

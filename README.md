@@ -2,13 +2,15 @@
 
 Kill whatever is running on a port. Windows.
 
-```powershell
+Works in both **PowerShell** and **Command Prompt (CMD)**.
+
+```
 killport 8080
 # Port 8080 is in use:
 #
-#   PID:     12345
-#   Name:    node
-#   Path:    C:\Program Files\nodejs\node.exe
+#   PID:   12345
+#   Name:  node
+#   Addr:  0.0.0.0:8080
 #
 # Killed.
 ```
@@ -17,49 +19,50 @@ killport 8080
 
 ## Install
 
-### Option 1 — PowerShell (one-liner)
+### Option 1 — PowerShell installer (installs both .ps1 and .bat)
 
-Run this in an **elevated PowerShell** (Run as Administrator):
+Run in an **elevated PowerShell** (Run as Administrator):
 
 ```powershell
 irm https://raw.githubusercontent.com/skosari/killport-win/main/install.ps1 | iex
 ```
 
-This installs `killport.ps1` and a `killport.cmd` wrapper so you can use it from any terminal (PowerShell, CMD, Windows Terminal).
+This installs both `killport.ps1` (PowerShell) and `killport.bat` (CMD) to your PATH.
 
-### Option 2 — Manual
+### Option 2 — CMD only (no PowerShell required)
 
-1. Download the script:
-   ```powershell
-   Invoke-WebRequest -Uri https://raw.githubusercontent.com/skosari/killport-win/main/killport.ps1 -OutFile killport.ps1
-   ```
-2. Move it somewhere on your `$PATH` (e.g. `C:\Windows\System32\` or a custom bin folder)
-3. Run it:
-   ```powershell
-   powershell -ExecutionPolicy Bypass -File killport.ps1 8080
-   ```
+Run in an **elevated Command Prompt** (Run as Administrator):
+
+```cmd
+curl -fsSL https://raw.githubusercontent.com/skosari/killport-win/main/killport.bat -o "%USERPROFILE%\AppData\Local\Microsoft\WindowsApps\killport.bat"
+```
+
+> Requires Windows 10 or later (curl is built in).
 
 ---
 
 ## Usage
 
-```powershell
-killport <port>     # kill whatever is on that port
-killport list       # list all listening ports
+```
+killport <port>     kill whatever is on that port
+killport list       list all listening ports
+killport update     update to the latest version
 ```
 
 ### killport list
 
-```powershell
+```
 killport list
 # Listening ports:
 #
-#   0.0.0.0:3000              node       1234
-#   0.0.0.0:5432              postgres   5678
-#   127.0.0.1:8080            python     9101
+#   0.0.0.0:3000     node        1234
+#   0.0.0.0:5432     postgres    5678
+#   127.0.0.1:8080   python      9101
 ```
 
-> **Note:** If you get an execution policy error, run PowerShell as Administrator and execute:
+---
+
+> **PowerShell execution policy:** If you get a policy error, run:
 > ```powershell
 > Set-ExecutionPolicy RemoteSigned -Scope CurrentUser
 > ```
