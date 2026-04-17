@@ -6,7 +6,25 @@ param(
 if (-not $Port) {
     Write-Host "Usage: killport <port>"
     Write-Host "       killport list"
-    exit 1
+    Write-Host ""
+    Write-Host "Listening ports:"
+    Write-Host ""
+    $connections = netstat -ano | Select-String "LISTENING"
+    $seen = @{}
+    foreach ($line in $connections) {
+        $parts = ($line -split '\s+') | Where-Object { $_ -ne '' }
+        $localAddr = $parts[1]
+        $pid = $parts[-1]
+        if ($seen[$pid + $localAddr]) { continue }
+        $seen[$pid + $localAddr] = $true
+        try {
+            $proc = Get-Process -Id $pid -ErrorAction Stop
+            Write-Host ("  {0,-25} {1,-10} {2}" -f $localAddr, $proc.Name, $pid)
+        } catch {
+            Write-Host ("  {0,-25} {1,-10} {2}" -f $localAddr, "(unknown)", $pid)
+        }
+    }
+    exit 0
 }
 
 # --- list all listening ports ---
