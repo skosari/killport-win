@@ -5,7 +5,7 @@ param(
     [string]$Port
 )
 
-$VERSION = "1.5.0"
+$VERSION = "1.6.0"
 $REPO = "skosari/killport-win"
 $RAW = "https://raw.githubusercontent.com/$REPO/main"
 
@@ -104,6 +104,50 @@ function Status-Port($p) {
     }
 }
 
+function Open-Ports {
+    Write-Host "Open ports (allowed external access via killport):"
+    Write-Host ""
+    $rules = Get-NetFirewallRule -DisplayName "killport-*" -ErrorAction SilentlyContinue |
+        Where-Object { $_.DisplayName -notmatch "udp$" }
+    if (-not $rules) { Write-Host "  None — no ports have been opened with killport."; return }
+    foreach ($rule in $rules) {
+        $filter = $rule | Get-NetFirewallPortFilter
+        $port = $filter.LocalPort
+        $conn = netstat -ano | Select-String ":$port\s" | Select-String /i "LISTENING"
+        if ($conn) {
+            $pid = (($conn | Select-Object -First 1) -split '\s+')[-1]
+            try { $name = (Get-Process -Id $pid -ErrorAction Stop).Name } catch { $name = "unknown" }
+            Write-Host ("  {0,-8}  listening  ({1})" -f $port, $name)
+        } else {
+            Write-Host ("  {0,-8}  not listening" -f $port)
+        }
+    }
+}
+
+function Closed-Ports {
+    Write-Host "Closed ports (listening locally, no external access):"
+    Write-Host ""
+    $openPorts = @()
+    $rules = Get-NetFirewallRule -DisplayName "killport-*" -ErrorAction SilentlyContinue |
+        Where-Object { $_.DisplayName -notmatch "udp$" }
+    foreach ($rule in $rules) {
+        $openPorts += ($rule | Get-NetFirewallPortFilter).LocalPort
+    }
+    $connections = netstat -ano | Select-String "LISTENING"
+    $seen = @{}
+    foreach ($line in $connections) {
+        $parts = ($line -split '\s+') | Where-Object { $_ -ne '' }
+        $addr = $parts[1]; $pid = $parts[-1]
+        $port = ($addr -split ':')[-1]
+        if ($seen[$port]) { continue }
+        $seen[$port] = $true
+        if ($openPorts -notcontains $port) {
+            try { $name = (Get-Process -Id $pid -ErrorAction Stop).Name } catch { $name = "unknown" }
+            Write-Host ("  {0,-8}  closed  ({1})" -f $port, $name)
+        }
+    }
+}
+
 function Show-IP {
     Write-Host "Network Interfaces"
     Write-Host "────────────────────────────────────"
@@ -159,7 +203,9 @@ if (-not $Command) {
     Write-Host "  killport list              list all listening ports"
     Write-Host "  killport open <port>       open a port to external connections"
     Write-Host "  killport close <port>      close a port from external connections"
-    Write-Host "  killport status <port>      show if a port is open or closed"
+    Write-Host "  killport openports         show all ports open to external access"
+    Write-Host "  killport closedports       show all listening ports with no external access"
+    Write-Host "  killport status <port>     show if a port is open or closed"
     Write-Host "  killport ip                show IP addresses, DNS, and network info"
     Write-Host "  killport update            update to the latest version"
     Write-Host ""
@@ -183,6 +229,10 @@ switch ($Command.ToLower()) {
     }
 
     "list" { List-Ports }
+
+    "openports" { Open-Ports }
+
+    "closedports" { Closed-Ports }
 
     "status" {
         if (-not $Port) { Write-Host "Usage: killport status <port>"; exit 1 }

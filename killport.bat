@@ -1,7 +1,7 @@
 @echo off
 setlocal enabledelayedexpansion
 
-set VERSION=1.5.0
+set VERSION=1.6.0
 set REPO=skosari/killport-win
 set RAW=https://raw.githubusercontent.com/%REPO%/main
 
@@ -12,6 +12,8 @@ if /i "%~1"=="ip" goto show_ip
 if /i "%~1"=="open" goto open_port
 if /i "%~1"=="close" goto close_port
 if /i "%~1"=="status" goto status_port
+if /i "%~1"=="openports" goto open_ports
+if /i "%~1"=="closedports" goto closed_ports
 goto kill_port
 
 :: -------------------------------------------------------
@@ -32,7 +34,9 @@ echo   killport ^<port^>            kill whatever is running on that port
 echo   killport list              list all listening ports
 echo   killport open ^<port^>       open a port to external connections
 echo   killport close ^<port^>      close a port from external connections
-echo   killport status ^<port^>      show if a port is open or closed
+echo   killport openports         show all ports open to external access
+echo   killport closedports       show all listening ports with no external access
+echo   killport status ^<port^>     show if a port is open or closed
 echo   killport ip                show IP addresses, DNS, and network info
 echo   killport update            update to the latest version
 echo.
@@ -134,6 +138,46 @@ if "%LISTENING%"=="1" (
 ) else (
   echo   Listening: NO  ^(nothing is running on this port^)
 )
+goto end
+
+:: -------------------------------------------------------
+:open_ports
+echo Open ports (allowed external access via killport):
+echo.
+set FOUND_OPEN=0
+for /f "tokens=5" %%a in ('netsh advfirewall firewall show rule name^=all ^| findstr /i "killport-"') do (
+  set FOUND_OPEN=1
+)
+for /f "tokens=2 delims=-" %%a in ('netsh advfirewall firewall show rule name^=all ^| findstr /i "killport-" ^| findstr /v "udp"') do (
+  set PORT=%%a
+  set PROCNAME=
+  for /f "tokens=5" %%b in ('netstat -ano ^| findstr ":!PORT! " ^| findstr /i "LISTENING"') do (
+    for /f "tokens=1 delims=," %%p in ('tasklist /fi "PID eq %%b" /fo csv /nh 2^>nul') do set PROCNAME=%%~p
+    if "!PROCNAME!"=="" set PROCNAME=unknown
+    echo   !PORT!    listening  (!PROCNAME!)
+  )
+)
+if "%FOUND_OPEN%"=="0" echo   None — no ports have been opened with killport.
+echo.
+goto end
+
+:: -------------------------------------------------------
+:closed_ports
+echo Closed ports (listening locally, no external access):
+echo.
+for /f "tokens=1,2,3,4,5" %%a in ('netstat -ano ^| findstr /i "LISTENING"') do (
+  set ADDR=%%b
+  set PID=%%e
+  for /f "delims=: tokens=2" %%p in ("%%b") do set PORT=%%p
+  netsh advfirewall firewall show rule name="killport-!PORT!-tcp" >nul 2>&1
+  if errorlevel 1 (
+    set PROCNAME=
+    for /f "tokens=1 delims=," %%q in ('tasklist /fi "PID eq %%e" /fo csv /nh 2^>nul') do set PROCNAME=%%~q
+    if "!PROCNAME!"=="" set PROCNAME=unknown
+    echo   !PORT!    closed  (!PROCNAME!)
+  )
+)
+echo.
 goto end
 
 :: -------------------------------------------------------
