@@ -12,7 +12,10 @@ if (-not $isAdmin) {
 Write-Host "Installing killport to $INSTALL_DIR ..."
 
 try {
-    Invoke-WebRequest -Uri "$RAW/killport.bat" -OutFile "$INSTALL_DIR\killport.bat" -UseBasicParsing
+    $content = (Invoke-WebRequest -Uri "$RAW/killport.bat" -UseBasicParsing).Content
+    # Ensure CRLF line endings — CMD batch parser breaks on LF-only files
+    $content = $content -replace "`r`n", "`n" -replace "`n", "`r`n"
+    [System.IO.File]::WriteAllText("$INSTALL_DIR\killport.bat", $content, [System.Text.Encoding]::UTF8)
 } catch {
     Write-Error "Failed to download killport.bat: $_"
     exit 1
