@@ -156,7 +156,7 @@ Port 8080 is now closed.
 ### `killport update`
 ```
 Checking for updates...
-Already up to date (v1.6.6)
+Already up to date (v1.6.7)
 ```
 
 ### `killport uninstall`
@@ -172,10 +172,22 @@ killport uninstalled.
 
 ## Uninstall
 
-Run in an **elevated PowerShell** (Run as Administrator):
+**Option 1 — built-in command** *(run as Administrator)*
+
+```
+killport uninstall
+```
+
+**Option 2 — PowerShell** *(elevated — Run as Administrator)*
 
 ```powershell
 irm https://raw.githubusercontent.com/skosari/killport-win/main/uninstall.ps1 | iex
+```
+
+**Option 3 — Command Prompt (CMD)** *(elevated — Run as Administrator)*
+
+```cmd
+curl -fsSL https://raw.githubusercontent.com/skosari/killport-win/main/uninstall.ps1 -o "%TEMP%\kp-uninstall.ps1" && powershell -ExecutionPolicy Bypass -File "%TEMP%\kp-uninstall.ps1"
 ```
 
 Removes the binary, implementation files, and all firewall rules created by `killport open`.
