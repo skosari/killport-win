@@ -4,7 +4,7 @@ param(
     [Parameter(Mandatory=$false, Position=2)] [string]$Extra
 )
 
-$VERSION = "1.10.12"
+$VERSION = "1.10.13"
 $REPO    = "skosari/killport-win"
 $RAW     = "https://raw.githubusercontent.com/$REPO/main"
 
@@ -104,17 +104,26 @@ function Show-IP {
         if ($ip) { $withIPv4 += [PSCustomObject]@{ Adapter=$a; IPv4=$ip.IPAddress } }
     }
 
+    # Determine primary adapter via default gateway interface index
+    $gwRoute = Get-NetRoute -DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinue |
+               Sort-Object RouteMetric | Select-Object -First 1
+    $primaryAdapter = $null
+    if ($gwRoute) {
+        $primaryAdapter = $withIPv4 | Where-Object { $_.Adapter.InterfaceIndex -eq $gwRoute.InterfaceIndex } | Select-Object -First 1
+    }
+    if (-not $primaryAdapter -and $withIPv4.Count -gt 0) { $primaryAdapter = $withIPv4[0] }
+
     # secondary adapters (dim)
-    for ($i = 1; $i -lt $withIPv4.Count; $i++) {
-        $d = $withIPv4[$i]
+    foreach ($d in $withIPv4) {
+        if ($primaryAdapter -and $d.Adapter.InterfaceIndex -eq $primaryAdapter.Adapter.InterfaceIndex) { continue }
         wh "  $($d.Adapter.Name)  ($($d.Adapter.InterfaceDescription))" DarkGray
         wh "  ──> $($d.IPv4)" DarkGray
         Write-Host ""
     }
 
     # primary adapter in box
-    if ($withIPv4.Count -gt 0) {
-        $pr = $withIPv4[0]
+    if ($primaryAdapter) {
+        $pr = $primaryAdapter
         wh "  ┌────────────────────────────────────────" Cyan
         wh "  │  " Cyan -nl:$false; Write-Host "$($pr.Adapter.Name)  " -NoNewline; wh "($($pr.Adapter.InterfaceDescription))" DarkGray
         wh "  │  " Cyan -nl:$false; wh "IPv4:  " White -nl:$false; wh $pr.IPv4 Green
