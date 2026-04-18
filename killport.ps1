@@ -1160,10 +1160,20 @@ function Check-Cert($target) {
 
 # ── sniff ────────────────────────────────────────────────────────────────────
 
-function Sniff-Port($port) {
-    if (-not $port) { Write-Host ""; wh "  Usage: killport sniff <port>" Yellow; Write-Host ""; return }
+function Sniff-Port($target) {
+    if (-not $target) {
+        Write-Host ""
+        wh "  Usage: killport sniff <port>  or  killport sniff <ip:port>" Yellow
+        Write-Host ""; return
+    }
+    $ip_ = $null; $port_ = $null; $label = $null
+    if ($target -match '^(.+):(\d+)$') {
+        $ip_ = $Matches[1]; $port_ = $Matches[2]; $label = "${ip_}:${port_}"
+    } else {
+        $port_ = $target; $label = "port $target"
+    }
     Write-Host ""
-    wh "  killport sniff" Cyan -nl; Write-Host "  port $port  (Ctrl+C to stop)"
+    wh "  killport sniff" Cyan -nl; Write-Host "  $label  (Ctrl+C to stop)"
     Write-Rule; Write-Host ""
     $pktmon = (Get-Command pktmon -ErrorAction SilentlyContinue)?.Source
     if (-not $pktmon) {
@@ -1171,10 +1181,12 @@ function Sniff-Port($port) {
         wh "  Alternative: Wireshark (https://www.wireshark.org)" DarkGray
         Write-Host ""; return
     }
-    wh "  Starting pktmon capture on port $port. Requires Administrator." DarkGray
+    if ($ip_) { wh "  Filter: host $ip_ and port $port_. Requires Administrator." DarkGray }
+    else       { wh "  Filter: port $port_. Requires Administrator." DarkGray }
     wh "  Press Ctrl+C to stop." DarkGray; Write-Host ""
     try {
-        & pktmon filter add -p $port 2>$null | Out-Null
+        if ($ip_) { & pktmon filter add -p $port_ --ip-address $ip_ 2>$null | Out-Null }
+        else       { & pktmon filter add -p $port_ 2>$null | Out-Null }
         & pktmon start --etw -l real-time 2>$null | ForEach-Object {
             $ts = (Get-Date).ToString("HH:mm:ss.fff")
             wh "  $ts  " DarkGray -nl; Write-Host $_
@@ -1420,6 +1432,7 @@ if (-not $Command) {
     Write-Host "  killport watch <port>      monitor live connections to a local port"
     Write-Host "  killport cert <host:port>  inspect TLS certificate (expiry, SANs, cipher)"
     Write-Host "  killport sniff <port>      capture and display traffic on a port"
+    Write-Host "  killport sniff <ip:port>   capture traffic to/from a specific host:port"
     Write-Host "  killport vuln <ip:port>    detect service version + query CVE database"
     Write-Host "  killport audit             review firewall rules with plain-English findings"
     Write-Host "  killport dns <domain>      DNS recon: A/MX/TXT/NS/AXFR zone transfer test"
