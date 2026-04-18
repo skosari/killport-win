@@ -351,6 +351,947 @@ show_ip() {
   fi
 }
 
+# ── Attack: AI-powered LAN penetration testing ──────────
+ATTACK_DIR="${HOME}/.config/killport"
+ATTACK_CONF="${ATTACK_DIR}/attack.conf"
+ATTACK_LOG="${ATTACK_DIR}/attack.log"
+
+attack_load_conf() {
+  ATTACK_OLLAMA="localhost:11434"
+  ATTACK_MODEL=""
+  if [ -f "$ATTACK_CONF" ]; then
+    while IFS='=' read -r k v; do
+      k=$(printf '%s' "$k" | tr -d ' '); v=$(printf '%s' "$v" | tr -d $'\r')
+      case "$k" in
+        OLLAMA_HOST) ATTACK_OLLAMA="$v" ;;
+        MODEL)       ATTACK_MODEL="$v"  ;;
+      esac
+    done < "$ATTACK_CONF"
+  fi
+}
+
+attack_save_conf() {
+  mkdir -p "$ATTACK_DIR"
+  printf 'OLLAMA_HOST=%s\nMODEL=%s\n' "$ATTACK_OLLAMA" "$ATTACK_MODEL" > "$ATTACK_CONF"
+}
+
+attack_config() {
+  local C=$'\033[0;36m' G=$'\033[0;32m' Y=$'\033[0;33m' RE=$'\033[0;31m'
+  local D=$'\033[2m' B=$'\033[1m' R=$'\033[0m'
+  attack_load_conf
+  printf "\n${B}${C}  Attack Config${R}\n"
+  printf "${C}  ────────────────────────────────────────────${R}\n\n"
+  printf "  Config: ${D}%s${R}\n\n" "$ATTACK_CONF"
+
+  # ── Ollama host ──────────────────────────────────────
+  printf "  ${B}Ollama Host${R}\n"
+  printf "  ${D}Ollama is the AI engine that runs your models locally or on another machine.${R}\n"
+  printf "  ${D}Enter the host and port where Ollama is running:${R}\n\n"
+  printf "    ${D}• This machine:    ${B}localhost:11434${R}  ${D}or${R}  ${B}127.0.0.1:11434${R}\n"
+  printf "    ${D}• Another LAN box: ${B}192.168.x.x:11434${R}  ${D}(the IP of that machine)${R}\n"
+  printf "    ${D}• Remote server:   ${B}45.76.x.x:11434${R}   ${D}(must have port 11434 open)${R}\n\n"
+  printf "  ${D}Default port is always 11434. Press Enter to keep current value.${R}\n\n"
+  printf "  Current: ${B}%s${R}\n  → " "$ATTACK_OLLAMA"
+  read -r _h; [ -n "$_h" ] && ATTACK_OLLAMA="$_h"
+
+  # ── Connect and list models ──────────────────────────
+  printf "\n  ${D}Connecting to Ollama at %s...${R}\n" "$ATTACK_OLLAMA"
+  local tags_json
+  tags_json=$(curl -sf --max-time 5 "http://${ATTACK_OLLAMA}/api/tags" 2>/dev/null || true)
+  if [ -z "$tags_json" ]; then
+    printf "  ${RE}Cannot reach Ollama at http://%s${R}\n" "$ATTACK_OLLAMA"
+    printf "  ${D}Start it with: ollama serve${R}\n\n"
+    printf "  Save host anyway? [y/N] → "
+    read -r _ans
+    if [[ "$_ans" =~ ^[Yy]$ ]]; then
+      attack_save_conf
+      printf "  ${Y}Saved (no model selected — will auto-detect when reachable).${R}\n\n"
+    else
+      printf "  ${D}Aborted. No changes saved.${R}\n\n"
+    fi
+    return
+  fi
+
+  # Parse model names with python3
+  local models_json model_names=()
+  if command -v python3 &>/dev/null; then
+    while IFS= read -r name; do
+      [ -n "$name" ] && model_names+=("$name")
+    done < <(printf '%s' "$tags_json" | python3 -c \
+      "import json,sys
+d=json.load(sys.stdin)
+for m in d.get('models',[]):
+    print(m['name'])" 2>/dev/null || true)
+  fi
+
+  if [ "${#model_names[@]}" -eq 0 ]; then
+    printf "  ${Y}Connected but no models are loaded.${R}\n"
+    printf "  ${D}Pull one with: ollama pull llama3.2${R}\n\n"
+    attack_save_conf
+    printf "  ${G}Host saved.${R}\n\n"
+    return
+  fi
+
+  printf "  ${G}Connected.${R}  ${D}%d model(s) available:${R}\n\n" "${#model_names[@]}"
+
+  local i=1
+  for name in "${model_names[@]}"; do
+    local marker="  "
+    [ "$name" = "$ATTACK_MODEL" ] && marker="${G}▶${R} "
+    printf "  %s${B}%2d${R}  %s\n" "$marker" "$i" "$name"
+    (( i++ )) || true
+  done
+  printf "\n  ${D}0 = auto-detect (always use first loaded model)${R}\n"
+
+  # Find current selection index for display
+  local current_display="auto"
+  for (( j=0; j<${#model_names[@]}; j++ )); do
+    [ "${model_names[$j]}" = "$ATTACK_MODEL" ] && current_display="$(( j+1 ))"
+  done
+
+  printf "\n  Select model  ${D}[current: %s]${R}\n  → " "$current_display"
+  read -r _sel
+
+  if [ -z "$_sel" ]; then
+    : # keep existing
+  elif [ "$_sel" = "0" ]; then
+    ATTACK_MODEL=""
+  elif [[ "$_sel" =~ ^[0-9]+$ ]] && [ "$_sel" -ge 1 ] && [ "$_sel" -le "${#model_names[@]}" ]; then
+    ATTACK_MODEL="${model_names[$(( _sel - 1 ))]}"
+  else
+    printf "  ${Y}Invalid selection — keeping current.${R}\n"
+  fi
+
+  attack_save_conf
+  local saved_display="${ATTACK_MODEL:-auto-detect}"
+  printf "\n  ${G}Saved.${R}  Host: ${B}%s${R}  ·  Model: ${B}%s${R}\n\n" "$ATTACK_OLLAMA" "$saved_display"
+}
+
+attack_log_view() {
+  local C=$'\033[0;36m' D=$'\033[2m' B=$'\033[1m' R=$'\033[0m'
+  if [ ! -s "$ATTACK_LOG" ]; then
+    printf "\n  ${D}No attack log yet at %s${R}\n\n" "$ATTACK_LOG"; return
+  fi
+  printf "\n${B}${C}  Attack Log${R}  ${D}%s${R}\n" "$ATTACK_LOG"
+  printf "${C}  ────────────────────────────────────────────${R}\n\n"
+  if command -v less &>/dev/null; then less -R "$ATTACK_LOG"; else cat "$ATTACK_LOG"; fi
+}
+
+attack_log_write() {
+  mkdir -p "$ATTACK_DIR"
+  local ts; ts=$(date '+%Y-%m-%d %H:%M:%S')
+  {
+    printf '\n════════════════════════════════════════════════════════════\n'
+    printf 'Time:   %s  |  Target: %s\n' "$ts" "$1"
+    printf 'Model:  %s  |  Ports:  %s\n' "$2" "$3"
+    printf '════════════════════════════════════════════════════════════\n'
+    printf '%s\n' "$4"
+  } >> "$ATTACK_LOG"
+}
+
+attack_probe_creds() {
+  local target="$1" service_lines="$2"
+  local RE=$'\033[0;31m' Y=$'\033[0;33m' G=$'\033[0;32m' D=$'\033[2m' B=$'\033[1m' R=$'\033[0m'
+
+  local CREDS=(
+    "admin:admin"       "admin:password"    "admin:1234"     "admin:12345"  "admin:"
+    "root:root"         "root:password"     "root:toor"      "root:1234"    "root:"
+    "user:user"         "user:password"     "test:test"      "guest:guest"  "guest:"
+    "pi:raspberry"      "ubuntu:ubuntu"     "admin:admin123" "administrator:administrator"
+  )
+  local findings=""
+
+  _has_port() { printf '%s' "$service_lines" | grep -q "^port ${1}/tcp"; }
+
+  if _has_port 21; then
+    printf "  ${D}Testing FTP (port 21)...${R}\n" >&2
+    local ftp_hit=""
+    for cred in "${CREDS[@]}"; do
+      local u="${cred%%:*}" p="${cred#*:}"
+      local res; res=$(curl -s --max-time 4 "ftp://${u}:${p}@${target}/" 2>&1 | head -2 || true)
+      if ! printf '%s' "$res" | grep -qiE "530|login.*denied|not logged|curl: \(67\)|curl: \(21\)"; then
+        printf "  ${RE}●${R}  FTP 21     ${B}%-28s${R}  ${RE}ACCESS GRANTED${R}\n" "$cred" >&2
+        findings+="FTP port 21: login succeeded with username='${u}' password='${p}'"$'\n'
+        ftp_hit=1; break
+      fi
+    done
+    [ -z "$ftp_hit" ] && printf "  ${D}○  FTP 21     no common credentials accepted${R}\n" >&2
+  fi
+
+  if _has_port 22; then
+    if command -v sshpass &>/dev/null; then
+      printf "  ${D}Testing SSH (port 22)...${R}\n" >&2
+      local ssh_hit=""
+      for cred in "${CREDS[@]}"; do
+        local u="${cred%%:*}" p="${cred#*:}"
+        if sshpass -p "$p" ssh \
+            -o StrictHostKeyChecking=no -o ConnectTimeout=3 \
+            -o BatchMode=no -o LogLevel=ERROR \
+            "${u}@${target}" exit 2>/dev/null; then
+          printf "  ${RE}●${R}  SSH 22     ${B}%-28s${R}  ${RE}ACCESS GRANTED${R}\n" "$cred" >&2
+          findings+="SSH port 22: login succeeded with username='${u}' password='${p}'"$'\n'
+          ssh_hit=1; break
+        fi
+      done
+      [ -z "$ssh_hit" ] && printf "  ${D}○  SSH 22     no common credentials accepted${R}\n" >&2
+    else
+      printf "  ${D}○  SSH 22     skipped (install sshpass to enable)${R}\n" >&2
+      findings+="SSH port 22: credential probe skipped — install sshpass to test this"$'\n'
+    fi
+  fi
+
+  if _has_port 23; then
+    printf "  ${RE}●${R}  Telnet 23  ${RE}PORT IS OPEN — unencrypted, all traffic visible${R}\n" >&2
+    findings+="Telnet port 23: open — this protocol sends everything including passwords in plain text"$'\n'
+  fi
+
+  for port in 80 443 8080 8000 8081 8443 3000 4000 4848 7001 9090; do
+    _has_port "$port" || continue
+    local scheme="http"; [[ "$port" =~ ^(443|8443)$ ]] && scheme="https"
+    printf "  ${D}Testing HTTP basic auth (port %s)...${R}\n" "$port" >&2
+    local http_hit=""
+    for cred in "${CREDS[@]}"; do
+      local u="${cred%%:*}" p="${cred#*:}"
+      local code; code=$(curl -sk --max-time 4 -o /dev/null -w "%{http_code}" \
+        -u "${u}:${p}" "${scheme}://${target}:${port}/" 2>/dev/null || true)
+      if [[ "$code" =~ ^(200|301|302|303)$ ]]; then
+        printf "  ${RE}●${R}  HTTP %-5s${B}%-28s${R}  ${RE}ACCESS GRANTED (HTTP %s)${R}\n" "$port" "$cred" "$code" >&2
+        findings+="HTTP port ${port}: login succeeded with username='${u}' password='${p}'"$'\n'
+        http_hit=1; break
+      fi
+    done
+    [ -z "$http_hit" ] && printf "  ${D}○  HTTP %-4s no common credentials accepted${R}\n" "$port" >&2
+  done
+
+  if _has_port 6379; then
+    printf "  ${D}Testing Redis (port 6379)...${R}\n" >&2
+    local pong; pong=$(printf "PING\r\nQUIT\r\n" | nc -w3 "$target" 6379 2>/dev/null | tr -d '\r' | head -1 || true)
+    if [[ "$pong" = "+PONG"* ]]; then
+      printf "  ${RE}●${R}  Redis 6379 ${RE}NO PASSWORD — open to anyone on the network${R}\n" >&2
+      findings+="Redis port 6379: no password set — anyone can read and delete all stored data"$'\n'
+    else
+      local redis_hit=""
+      for cred in "${CREDS[@]}"; do
+        local p="${cred#*:}"; [ -z "$p" ] && continue
+        local res; res=$(printf "AUTH %s\r\nQUIT\r\n" "$p" | nc -w3 "$target" 6379 2>/dev/null | tr -d '\r' | head -1 || true)
+        if [[ "$res" = "+OK"* ]]; then
+          printf "  ${RE}●${R}  Redis 6379 password '${B}%s${R}'  ${RE}WEAK PASSWORD ACCEPTED${R}\n" "$p" >&2
+          findings+="Redis port 6379: weak password '${p}' accepted"$'\n'
+          redis_hit=1; break
+        fi
+      done
+      [ -z "$redis_hit" ] && printf "  ${D}○  Redis 6379 password protected, common passwords rejected${R}\n" >&2
+    fi
+  fi
+
+  if _has_port 27017; then
+    printf "  ${D}Testing MongoDB (port 27017)...${R}\n" >&2
+    local mongo_res; mongo_res=$(printf '\x3a\x00\x00\x00' | nc -w3 "$target" 27017 2>/dev/null | tr -cd '[:print:]' | head -c 30 || true)
+    if [ -n "$mongo_res" ]; then
+      printf "  ${RE}●${R}  Mongo 27017 ${RE}RESPONDS WITHOUT AUTH — database may be fully exposed${R}\n" >&2
+      findings+="MongoDB port 27017: responds without authentication — database contents may be accessible"$'\n'
+    else
+      printf "  ${D}○  Mongo 27017 authentication appears enforced${R}\n" >&2
+    fi
+  fi
+
+  if _has_port 3306; then
+    if command -v mysql &>/dev/null; then
+      printf "  ${D}Testing MySQL (port 3306)...${R}\n" >&2
+      local mysql_hit=""
+      for cred in "${CREDS[@]}"; do
+        local u="${cred%%:*}" p="${cred#*:}"
+        local res; res=$(mysql -h "$target" -P 3306 -u "$u" -p"$p" --connect-timeout=3 \
+          -e "SELECT 1;" 2>&1 | head -1 || true)
+        if printf '%s' "$res" | grep -qE "^1$|\| 1 \|"; then
+          printf "  ${RE}●${R}  MySQL 3306  ${B}%-28s${R}  ${RE}ACCESS GRANTED${R}\n" "$cred" >&2
+          findings+="MySQL port 3306: login succeeded with username='${u}' password='${p}'"$'\n'
+          mysql_hit=1; break
+        fi
+      done
+      [ -z "$mysql_hit" ] && printf "  ${D}○  MySQL 3306  no common credentials accepted${R}\n" >&2
+    else
+      printf "  ${D}○  MySQL 3306  skipped (mysql client not installed)${R}\n" >&2
+      findings+="MySQL port 3306: credential probe skipped — mysql client not installed"$'\n'
+    fi
+  fi
+
+  if _has_port 5432; then
+    if command -v psql &>/dev/null; then
+      printf "  ${D}Testing PostgreSQL (port 5432)...${R}\n" >&2
+      local pg_hit=""
+      for cred in "${CREDS[@]}"; do
+        local u="${cred%%:*}" p="${cred#*:}"
+        local res; res=$(PGPASSWORD="$p" psql -h "$target" -p 5432 -U "$u" -c "\q" 2>&1 | head -1 || true)
+        if ! printf '%s' "$res" | grep -qiE "failed|denied|refused|error|fatal"; then
+          printf "  ${RE}●${R}  PgSQL 5432  ${B}%-28s${R}  ${RE}ACCESS GRANTED${R}\n" "$cred" >&2
+          findings+="PostgreSQL port 5432: login succeeded with username='${u}' password='${p}'"$'\n'
+          pg_hit=1; break
+        fi
+      done
+      [ -z "$pg_hit" ] && printf "  ${D}○  PgSQL 5432  no common credentials accepted${R}\n" >&2
+    else
+      printf "  ${D}○  PgSQL 5432  skipped (psql not installed)${R}\n" >&2
+      findings+="PostgreSQL port 5432: credential probe skipped — psql not installed"$'\n'
+    fi
+  fi
+  printf '%s' "$findings"
+}
+
+attack_run() {
+  local TARGET="$1" FULL_SCAN="${2:-}" SINGLE_PORT=""
+  if [[ "$TARGET" =~ ^(.+):([0-9]+)$ ]]; then
+    SINGLE_PORT="${BASH_REMATCH[2]}"; TARGET="${BASH_REMATCH[1]}"
+  fi
+
+  local C=$'\033[0;36m' G=$'\033[0;32m' Y=$'\033[0;33m' RE=$'\033[0;31m'
+  local D=$'\033[2m' B=$'\033[1m' R=$'\033[0m'
+
+  attack_load_conf
+
+  if [ -n "$SINGLE_PORT" ]; then
+    printf "\n${B}${C}  AI Pentest${R}  ${D}→ %s : %s${R}\n" "$TARGET" "$SINGLE_PORT"
+  else
+    printf "\n${B}${C}  AI Pentest${R}  ${D}→ %s  (all common ports)${R}\n" "$TARGET"
+  fi
+  printf "${C}  ────────────────────────────────────────────${R}\n\n"
+
+  command -v python3 &>/dev/null || { printf "  ${RE}python3 required but not found.${R}\n\n"; return 1; }
+
+  # ── tool check / install ──────────────────────────────
+  _win_install() {
+    local _tool="$1"
+    if   command -v choco  &>/dev/null; then
+      printf "  Install ${B}%s${R} now via Chocolatey? [Y/n] → " "$_tool"; read -r _ans
+      [[ "${_ans:-y}" =~ ^[Yy]$ ]] || { printf "  ${D}Skipping %s.${R}\n\n" "$_tool"; return; }
+      choco install "$_tool" -y
+    elif command -v winget &>/dev/null; then
+      printf "  Install ${B}%s${R} now via winget? [Y/n] → " "$_tool"; read -r _ans
+      [[ "${_ans:-y}" =~ ^[Yy]$ ]] || { printf "  ${D}Skipping %s.${R}\n\n" "$_tool"; return; }
+      winget install "$_tool"
+    elif command -v scoop  &>/dev/null; then
+      printf "  Install ${B}%s${R} now via Scoop? [Y/n] → " "$_tool"; read -r _ans
+      [[ "${_ans:-y}" =~ ^[Yy]$ ]] || { printf "  ${D}Skipping %s.${R}\n\n" "$_tool"; return; }
+      scoop install "$_tool"
+    else
+      printf "  ${D}No package manager found. Install %s manually from https://nmap.org/download.html${R}\n\n" "$_tool"
+    fi
+    printf "\n"
+  }
+  if ! command -v nmap    &>/dev/null; then printf "  ${Y}nmap not installed${R}    — needed for port/service scanning.\n";    _win_install nmap;    fi
+  if ! command -v sshpass &>/dev/null; then printf "  ${Y}sshpass not installed${R} — needed for SSH credential testing.\n"; _win_install sshpass; fi
+  if ! command -v hashcat &>/dev/null && ! command -v john &>/dev/null; then
+    printf "  ${Y}hashcat/john not installed${R} — needed for hash cracking.\n"
+    _win_install hashcat
+  fi
+
+  printf "  ${D}Connecting to Ollama at %s...${R}\n" "$ATTACK_OLLAMA"
+  local tags_json
+  tags_json=$(curl -sf --max-time 5 "http://${ATTACK_OLLAMA}/api/tags" 2>/dev/null || true)
+  if [ -z "$tags_json" ]; then
+    printf "  ${RE}Ollama not reachable at http://%s${R}\n" "$ATTACK_OLLAMA"
+    printf "  ${D}Run: ollama serve   or configure: killport attack config${R}\n\n"
+    return 1
+  fi
+
+  local MODEL="$ATTACK_MODEL"
+  if [ -z "$MODEL" ]; then
+    MODEL=$(printf '%s' "$tags_json" | python3 -c \
+      "import json,sys; d=json.load(sys.stdin); print(d['models'][0]['name'] if d.get('models') else '')" 2>/dev/null || true)
+  fi
+  [ -z "$MODEL" ] && { printf "  ${Y}No models loaded. Run: ollama pull llama3.2${R}\n\n"; return 1; }
+  printf "  ${D}Model: %s${R}\n\n" "$MODEL"
+
+  local COMMON_PORTS=(21 22 23 25 53 80 110 143 389 443 445 465 587 993 995 1433 1521 \
+         2181 3000 3001 3306 3389 4000 4200 4848 5000 5173 5432 5672 5900 \
+         6379 6443 7001 7474 8000 8080 8081 8443 8888 9000 9090 9200 9300 \
+         11211 27017 28017 50070)
+
+  local PORTS_DESC
+  if [ -n "$SINGLE_PORT" ]; then
+    PORTS_DESC="port $SINGLE_PORT"
+  elif [ -n "$FULL_SCAN" ]; then
+    PORTS_DESC="all 65535 ports"
+  else
+    PORTS_DESC="${#COMMON_PORTS[@]} common ports"
+  fi
+
+  local found_count=0 service_lines=""
+
+  _nmap_parse() {
+    local np ns nv
+    np=$(printf '%s' "$1" | awk '{print $1}' | cut -d/ -f1)
+    ns=$(printf '%s' "$1" | awk '{print $3}')
+    nv=$(printf '%s' "$1" | awk '{for(i=4;i<=NF;i++) printf $i" ";}' | sed 's/ *$//')
+    printf "  ${G}●${R}  ${B}%-8s${R}  %-14s  ${D}%s${R}\n" "$np" "$ns" "$nv"
+    (( found_count++ )) || true
+    service_lines+="port ${np}/tcp: ${ns} ${nv}"$'\n'
+  }
+
+  if [ -n "$SINGLE_PORT" ]; then
+    printf "  ${B}Scanning port %s on %s...${R}\n\n" "$SINGLE_PORT" "$TARGET"
+    if command -v nmap &>/dev/null; then
+      while IFS= read -r nline; do _nmap_parse "$nline"; done \
+        < <(nmap -p "$SINGLE_PORT" --open -sV -T4 "$TARGET" 2>/dev/null | grep "^[0-9]" || true)
+    else
+      nc -z -w2 "$TARGET" "$SINGLE_PORT" 2>/dev/null && {
+        local banner; banner=$(printf '\r\n' | nc -w2 "$TARGET" "$SINGLE_PORT" 2>/dev/null | tr -cd '[:print:] ' | head -c 120 || true)
+        printf "  ${G}●${R}  ${B}%-8s${R}  ${D}%s${R}\n" "$SINGLE_PORT" "${banner:0:60}"
+        (( found_count++ )) || true
+        service_lines+="port ${SINGLE_PORT}/tcp: ${banner:0:100}"$'\n'
+      }
+    fi
+  else
+    # ── Pass 1: common ports ──────────────────────────────
+    local pass_label; [ -n "$FULL_SCAN" ] && pass_label="Pass 1/2  " || pass_label=""
+    printf "  ${B}%sScanning %d common ports on %s...${R}\n\n" "$pass_label" "${#COMMON_PORTS[@]}" "$TARGET"
+    if command -v nmap &>/dev/null; then
+      local common_csv; common_csv=$(IFS=,; echo "${COMMON_PORTS[*]}")
+      while IFS= read -r nline; do _nmap_parse "$nline"; done \
+        < <(nmap -p "$common_csv" --open -sV -T4 "$TARGET" 2>/dev/null | grep "^[0-9]" || true)
+    else
+      local t1; t1=$(mktemp)
+      for port in "${COMMON_PORTS[@]}"; do
+        ( nc -z -w1 "$TARGET" "$port" 2>/dev/null && printf "%05d\n" "$port" >> "$t1" ) &
+      done; wait
+      if [ -s "$t1" ]; then
+        while IFS= read -r padded; do
+          local p=$(( 10#$padded )) banner
+          banner=$(printf '\r\n' | nc -w2 "$TARGET" "$p" 2>/dev/null | tr -cd '[:print:] ' | head -c 120 || true)
+          printf "  ${G}●${R}  ${B}%-8s${R}  ${D}%s${R}\n" "$p" "${banner:0:60}"
+          (( found_count++ )) || true
+          service_lines+="port ${p}/tcp: ${banner:0:100}"$'\n'
+        done < <(sort "$t1")
+      fi
+      rm -f "$t1"
+    fi
+
+    # ── Pass 2: full sweep 1-65535 (only when allports) ──
+    if [ -n "$FULL_SCAN" ]; then
+      printf "\n  ${B}Pass 2/2${R}  ${D}scanning remaining 65535 ports on %s...${R}\n\n" "$TARGET"
+      local common_set; common_set=" ${COMMON_PORTS[*]} "
+      if command -v nmap &>/dev/null; then
+        local _prog=0 _bar_width=40
+        _draw_bar() {
+          local pct=$1 filled=$(( $1 * _bar_width / 100 ))
+          local bar=""; local i=0
+          while (( i < filled )); do bar+="█"; (( i++ )) || true; done
+          while (( i < _bar_width )); do bar+="░"; (( i++ )) || true; done
+          printf "  [%s] %3d%%\r" "$bar" "$pct"
+        }
+        _draw_bar 0
+        while IFS= read -r nline; do
+          if [[ "$nline" =~ ^[0-9] ]]; then
+            local _p; _p=$(printf '%s' "$nline" | awk '{print $1}' | cut -d/ -f1)
+            [[ "$common_set" == *" $_p "* ]] && continue
+            printf "\033[2K"
+            _nmap_parse "$nline"
+            _draw_bar "$_prog"
+          elif [[ "$nline" =~ ([0-9]+)%\ done ]]; then
+            _prog="${BASH_REMATCH[1]}"
+            _draw_bar "$_prog"
+          fi
+        done < <(nmap -p- --open -sV -T4 --stats-every 3s "$TARGET" 2>&1 | grep -E "^[0-9]|% done" || true)
+        printf "\033[2K  ${G}Pass 2/2 complete.${R}\n\n"
+      else
+        local t2; t2=$(mktemp)
+        local _total=65535 _done=0 _bar_width=40
+        _draw_bar2() {
+          local filled=$(( $1 * _bar_width / _total ))
+          local pct=$(( $1 * 100 / _total ))
+          local bar=""; local i=0
+          while (( i < filled )); do bar+="█"; (( i++ )) || true; done
+          while (( i < _bar_width )); do bar+="░"; (( i++ )) || true; done
+          printf "  [%s] %3d%%  (%d / %d)\r" "$bar" "$pct" "$1" "$_total"
+        }
+        _draw_bar2 0
+        for port in $(seq 1 65535); do
+          [[ "$common_set" == *" $port "* ]] && { (( _done++ )) || true; continue; }
+          ( nc -z -w1 "$TARGET" "$port" 2>/dev/null && printf "%05d\n" "$port" >> "$t2" ) &
+          (( _done++ )) || true
+          (( port % 500 == 0 )) && { wait; _draw_bar2 "$_done"; }
+        done; wait
+        printf "\033[2K  ${G}Pass 2/2 complete.${R}\n\n"
+        if [ -s "$t2" ]; then
+          while IFS= read -r padded; do
+            local p=$(( 10#$padded )) banner
+            banner=$(printf '\r\n' | nc -w2 "$TARGET" "$p" 2>/dev/null | tr -cd '[:print:] ' | head -c 120 || true)
+            printf "  ${G}●${R}  ${B}%-8s${R}  ${D}%s${R}\n" "$p" "${banner:0:60}"
+            (( found_count++ )) || true
+            service_lines+="port ${p}/tcp: ${banner:0:100}"$'\n'
+          done < <(sort "$t2")
+        fi
+        rm -f "$t2"
+      fi
+    fi
+  fi
+
+  if [ "$found_count" -eq 0 ]; then
+    printf "  ${D}No open ports found on %s${R}\n\n" "$TARGET"
+    attack_log_write "$TARGET" "$MODEL" "$PORTS_DESC" "No open ports found."
+    return 0
+  fi
+
+  # ── Agentic investigation ─────────────────────────────
+  local py_agent; py_agent=$(mktemp /tmp/kp_agent_XXXXXX.py)
+  cat > "$py_agent" <<'PYEOF'
+import json, os, sys, subprocess, re, time, datetime
+
+OLLAMA  = os.environ["KP_OLLAMA"]
+MODEL   = os.environ["KP_MODEL"]
+TARGET  = os.environ["KP_TARGET"]
+INITIAL = os.environ["KP_SERVICES"]
+MAX_IT  = 20
+
+C='\033[0;36m'; G='\033[0;32m'; Y='\033[0;33m'; RE='\033[0;31m'
+D='\033[2m';    B='\033[1m';    R='\033[0m'
+
+findings = {}
+
+def ensure_port(port):
+    if port not in findings:
+        findings[port] = dict(service="",version="",banner="",
+            creds_ok=[],no_auth=False,paths_found=[],
+            hashes=[],cracked=[],notes=[],raw_scan="")
+
+RISK_RULES = {
+    "critical": lambda d: d["no_auth"] or bool(d["creds_ok"]) or d.get("port") in ("23",),
+    "high":     lambda d: bool(d["paths_found"]) or d["service"] in ("ftp","redis","mongodb","mysql","postgres","postgresql","telnet"),
+    "medium":   lambda d: d["service"] in ("ssh","http","https","smtp","imap","pop3"),
+    "low":      lambda d: True,
+}
+RISK_ICON = {"critical":"🔴 Critical","high":"🟠 High","medium":"🟡 Medium","low":"🟢 Low"}
+
+def risk_level(d):
+    for level, check in RISK_RULES.items():
+        if check(d): return level
+    return "low"
+
+FIX = {
+    "ssh":        ["Disable password login — use SSH keys only\n    Edit /etc/ssh/sshd_config → set: PasswordAuthentication no",
+                   "Move SSH to a non-standard port (e.g. 2222) to reduce bot noise",
+                   "Install fail2ban to automatically block repeated failed logins"],
+    "ftp":        ["Disable FTP — it sends passwords in plain text over the network",
+                   "Use SFTP instead (it's encrypted and comes built into SSH)",
+                   "If FTP is required, restrict access by IP with a firewall rule"],
+    "telnet":     ["Disable Telnet immediately — it is completely unencrypted",
+                   "Replace with SSH: sudo systemctl disable telnet && sudo apt install openssh-server"],
+    "redis":      ["Set a strong password: add  requirepass YOURPASSWORD  to /etc/redis/redis.conf",
+                   "Bind Redis to localhost only: add  bind 127.0.0.1  to redis.conf",
+                   "Block port 6379 from the network with a firewall rule"],
+    "mongodb":    ["Enable authentication: restart mongod with the --auth flag",
+                   "Bind MongoDB to localhost if it is only used on this server",
+                   "Block port 27017 from the internet with a firewall rule"],
+    "mysql":      ["Use a strong unique password for every database user",
+                   "Disable remote root login: run  DELETE FROM mysql.user WHERE User='root' AND Host!='localhost';",
+                   "Block port 3306 from the internet with a firewall rule"],
+    "postgresql": ["Disable trust authentication — set a password for the postgres user",
+                   "Edit pg_hba.conf to restrict which IPs can connect",
+                   "Block port 5432 from the internet with a firewall rule"],
+    "http":       ["Move to HTTPS — plain HTTP sends all data including passwords unencrypted",
+                   "Keep your web server and all plugins/software up to date",
+                   "Remove or password-protect any /admin or /config pages you find"],
+    "https":      ["Keep your SSL certificate up to date (check expiry date)",
+                   "Disable old TLS versions (1.0 and 1.1) — use TLS 1.2 or 1.3 only",
+                   "Keep your web server software up to date"],
+    "smtp":       ["Require authentication before allowing email to be sent",
+                   "Disable open relay — your server should only send mail for your own domain"],
+    "default":    ["Update the software running on this port to the latest version",
+                   "Add a firewall rule to restrict access to only IPs that need it",
+                   "If you do not use this service, disable it"],
+}
+
+def fix_steps(service):
+    s = service.lower()
+    for key in FIX:
+        if key in s: return FIX[key]
+    return FIX["default"]
+
+TOP_USERS  = ["admin","root","user","test","guest","ubuntu","pi","oracle","postgres","mysql","ftp"]
+TOP_PASSES = ["","admin","password","123456","1234","pass","root","toor","test","guest",
+              "letmein","welcome","admin123","password1","abc123","111111","raspberry",
+              "ubuntu","changeme","default","qwerty","12345","12345678","dragon","master",
+              "trustno1","sunshine","princess","shadow","superman","football","monkey"]
+
+def sh(cmd, inp=None, timeout=30):
+    try:
+        r = subprocess.run(cmd, input=inp, capture_output=True, text=True, timeout=timeout)
+        return (r.stdout + r.stderr)[:2500]
+    except subprocess.TimeoutExpired: return "(timed out)"
+    except Exception as e: return f"(error: {e})"
+
+def has(tool): return subprocess.run(["which",tool],capture_output=True).returncode==0
+
+SENSITIVE_PATHS=["/admin","/admin/","/administrator","/login","/login.php","/wp-admin",
+    "/wp-login.php","/phpmyadmin","/pma","/config","/.env","/backup","/api/v1","/api/v2",
+    "/console","/manager","/actuator/env","/metrics","/status","/.git/HEAD","/server-status"]
+
+def tool_scan(port):
+    ensure_port(port)
+    if has("nmap"):
+        out = sh(["nmap","-sV","-sC","-p",port,"--open","-T4",TARGET],timeout=45)
+        findings[port]["raw_scan"] = out
+        for line in out.splitlines():
+            if f"{port}/tcp" in line:
+                parts = line.split()
+                if len(parts)>=4:
+                    findings[port]["service"] = parts[2]
+                    findings[port]["version"]  = " ".join(parts[3:])
+        return out
+    return sh(["nc","-z","-w3",TARGET,port])
+
+def tool_banner(port):
+    ensure_port(port)
+    try:
+        r = subprocess.run(["nc","-w3",TARGET,port],input="\r\n",
+            capture_output=True,text=True,timeout=6)
+        b = r.stdout[:600] or "(no banner)"
+        findings[port]["banner"] = b
+        for m in re.findall(r'\$[126]\$\S+|[a-f0-9]{32,64}', b):
+            if m not in findings[port]["hashes"]:
+                findings[port]["hashes"].append(m)
+        return b
+    except: return "(failed)"
+
+def tool_http_probe(port, path="/"):
+    ensure_port(port)
+    scheme = "https" if port in ("443","8443") else "http"
+    out = sh(["curl","-sk","--max-time","6","-i","-L","--max-redirs","2",
+              f"{scheme}://{TARGET}:{port}{path}"])
+    for m in re.findall(r'\$[126]\$\S+|[a-f0-9]{32,64}', out):
+        if m not in findings[port]["hashes"]:
+            findings[port]["hashes"].append(m)
+    return out[:1500]
+
+def tool_http_paths(port):
+    ensure_port(port)
+    scheme = "https" if port in ("443","8443") else "http"
+    found=[]
+    for path in SENSITIVE_PATHS:
+        r = subprocess.run(["curl","-sk","--max-time","4","-o","/dev/null",
+            "-w","%{http_code}",f"{scheme}://{TARGET}:{port}{path}"],
+            capture_output=True,text=True,timeout=6)
+        code=r.stdout.strip()
+        if code not in ("404","000","","400"):
+            found.append(f"{code}  {path}")
+    findings[port]["paths_found"].extend(found)
+    return "\n".join(found) if found else "no sensitive paths found"
+
+def tool_try(service,port,user,passwd):
+    ensure_port(port)
+    s=service.lower(); res="failed"
+    if s=="ssh":
+        if not has("sshpass"): return "sshpass not installed"
+        r=subprocess.run(["sshpass","-p",passwd,"ssh","-o","StrictHostKeyChecking=no",
+            "-o","ConnectTimeout=3","-o","BatchMode=no","-o","LogLevel=ERROR",
+            f"{user}@{TARGET}","exit"],capture_output=True,text=True,timeout=8)
+        res="LOGIN SUCCEEDED" if r.returncode==0 else "failed"
+    elif s in ("http","https","web"):
+        scheme="https" if port in ("443","8443") else "http"
+        r=subprocess.run(["curl","-sk","--max-time","4","-o","/dev/null","-w","%{http_code}",
+            "-u",f"{user}:{passwd}",f"{scheme}://{TARGET}:{port}/"],
+            capture_output=True,text=True,timeout=6)
+        code=r.stdout.strip()
+        res=f"HTTP {code} — SUCCESS" if code in ("200","302","301","303") else "failed"
+    elif s=="ftp":
+        r=subprocess.run(["curl","-s","--max-time","5",f"ftp://{user}:{passwd}@{TARGET}/"],
+            capture_output=True,text=True,timeout=7)
+        res="LOGIN SUCCEEDED" if (r.returncode==0 and "530" not in r.stderr) else "failed"
+    elif s=="redis":
+        r=subprocess.run(["nc","-w3",TARGET,port],input=f"AUTH {passwd}\r\nPING\r\nQUIT\r\n",
+            capture_output=True,text=True,timeout=5)
+        if "+OK" in r.stdout and "+PONG" in r.stdout:
+            res=f"password '{passwd}' ACCEPTED"
+        else:
+            r2=subprocess.run(["nc","-w3",TARGET,port],input="PING\r\nQUIT\r\n",
+                capture_output=True,text=True,timeout=5)
+            if "+PONG" in r2.stdout:
+                findings[port]["no_auth"]=True; res="NO AUTH REQUIRED"
+    elif s=="mysql":
+        if not has("mysql"): return "mysql client not installed"
+        r=subprocess.run(["mysql","-h",TARGET,"-P",port,"-u",user,f"-p{passwd}",
+            "--connect-timeout=3","-e","SELECT 1;"],capture_output=True,text=True,timeout=8)
+        res="LOGIN SUCCEEDED" if r.returncode==0 else "failed"
+    elif s in ("postgres","postgresql","pg"):
+        if not has("psql"): return "psql not installed"
+        env={**os.environ,"PGPASSWORD":passwd}
+        r=subprocess.run(["psql","-h",TARGET,"-p",port,"-U",user,"-c","\\q"],
+            capture_output=True,text=True,timeout=8,env=env)
+        res="LOGIN SUCCEEDED" if r.returncode==0 else "failed"
+    if "SUCCEEDED" in res or "ACCEPTED" in res:
+        cred=f"{user}:{passwd}"
+        if cred not in findings[port]["creds_ok"]:
+            findings[port]["creds_ok"].append(cred)
+    return res
+
+def tool_wordlist(service, port):
+    ensure_port(port)
+    hits=[]
+    if service.lower()=="redis":
+        r=subprocess.run(["nc","-w3",TARGET,port],input="PING\r\nQUIT\r\n",
+            capture_output=True,text=True,timeout=5)
+        if "+PONG" in r.stdout:
+            findings[port]["no_auth"]=True
+            return "CRITICAL: Redis has NO password — fully open to anyone"
+    for user in TOP_USERS:
+        for pw in TOP_PASSES:
+            res=tool_try(service,port,user,pw)
+            if "SUCCEEDED" in res or "ACCEPTED" in res or "NO AUTH" in res:
+                hits.append(f"  ✓ {user}:{pw or '(empty)'}  →  {res}")
+                if len(hits)>=3: break
+        if len(hits)>=3: break
+    return "\n".join(hits) if hits else "no credentials from wordlist succeeded"
+
+def tool_nmap_script(port, script):
+    if not has("nmap"): return "nmap not installed"
+    out=sh(["nmap","-p",port,f"--script={script}","-T4",TARGET],timeout=60)
+    ensure_port(port)
+    findings[port]["notes"].append(f"nmap {script}: {out[:200]}")
+    return out
+
+def tool_crack(h):
+    h=h.strip()
+    import tempfile
+    hf=tempfile.NamedTemporaryFile(mode='w',suffix='.hash',delete=False)
+    hf.write(h+"\n"); hf.close()
+    ht=""; flag=""
+    if re.match(r'^[a-f0-9]{32}$',h,re.I):   ht="MD5";         flag="--hash-type=0"
+    elif re.match(r'^[a-f0-9]{40}$',h,re.I): ht="SHA1";        flag="--hash-type=100"
+    elif re.match(r'^[a-f0-9]{64}$',h,re.I): ht="SHA256";      flag="--hash-type=1400"
+    elif re.match(r'^\$2[aby]\$',h):          ht="bcrypt";      flag="--hash-type=3200"
+    elif re.match(r'^\$1\$',h):               ht="MD5crypt";    flag="--hash-type=500"
+    elif re.match(r'^\$6\$',h):               ht="SHA512crypt"; flag="--hash-type=1800"
+    wl="/usr/share/wordlists/rockyou.txt"
+    if not os.path.exists(wl): wl="/usr/share/dict/words"
+    out=""
+    if has("hashcat") and flag and os.path.exists(wl):
+        r=subprocess.run(["hashcat",flag,hf.name,wl,"--quiet","--potfile-disable",
+            "--outfile-format=2","--runtime=20"],
+            capture_output=True,text=True,timeout=25)
+        if r.returncode==0 and r.stdout.strip():
+            out=f"CRACKED: {r.stdout.strip().splitlines()[-1]}"
+    elif has("john") and os.path.exists(wl):
+        subprocess.run(["john",f"--wordlist={wl}",hf.name],
+            capture_output=True,text=True,timeout=25)
+        r2=subprocess.run(["john","--show",hf.name],capture_output=True,text=True,timeout=5)
+        if r2.stdout.strip(): out=f"CRACKED: {r2.stdout.strip()}"
+    os.unlink(hf.name)
+    result=out or f"could not crack — hash type: {ht or 'unknown'}"
+    for p,d in findings.items():
+        if h in d["hashes"] and out:
+            d["cracked"].append(f"{h[:20]}... → {out}")
+    return result
+
+def ollama_chat(msgs):
+    payload=json.dumps({"model":MODEL,"messages":msgs,"stream":False})
+    r=subprocess.run(["curl","-sN",f"http://{OLLAMA}/api/chat",
+        "-H","Content-Type: application/json","--data-binary",payload],
+        capture_output=True,text=True,timeout=90)
+    try:
+        content=json.loads(r.stdout)["message"]["content"]
+        content=re.sub(r'<think>.*?</think>','',content,flags=re.DOTALL).strip()
+        return content
+    except: return ""
+
+def ollama_describe(port, data):
+    svc=data["service"] or f"unknown (port {port})"
+    ver=data["version"]
+    msgs=[
+        {"role":"system","content":"You are a friendly security advisor. Answer in exactly 2 short sentences, plain English, no jargon, no bullet points."},
+        {"role":"user","content":(
+            f"Port {port} is running {svc} {ver}. "
+            +("It has NO password — anyone can connect. " if data["no_auth"] else "")
+            +(f"These credentials worked: {', '.join(data['creds_ok'])}. " if data["creds_ok"] else "")
+            +"In 2 plain sentences, explain to a non-technical person what risk this poses."
+        )}
+    ]
+    return ollama_chat(msgs).strip()
+
+def render_report():
+    now=datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+    lines=[]
+    lines.append("═"*62)
+    lines.append(f"  SECURITY REPORT  ·  {TARGET}  ·  {now}")
+    lines.append(f"  Model: {MODEL}")
+    lines.append("═"*62)
+    RISK_ORDER={"critical":0,"high":1,"medium":2,"low":3}
+    priority=[]
+    for port,data in sorted(findings.items(),key=lambda x:int(x[0]) if x[0].isdigit() else 0):
+        data["port"]=port
+        rl=risk_level(data)
+        priority.append((RISK_ORDER[rl],port,data,rl))
+    priority.sort(key=lambda x:x[0])
+    for _,port,data,rl in priority:
+        svc=data["service"] or "unknown"
+        ver=f"  ({data['version']})" if data["version"] else ""
+        lines.append("")
+        lines.append(f"  PORT {port} — {svc.upper()}{ver}")
+        lines.append(f"  Risk: {RISK_ICON[rl]}")
+        lines.append("  "+"─"*48)
+        if data["no_auth"]:
+            lines.append("  ⚠  NO PASSWORD REQUIRED — anyone on the network can connect")
+        for cred in data["creds_ok"]:
+            lines.append(f"  ⚠  WEAK CREDENTIAL WORKS: {cred}")
+        for cracked in data["cracked"]:
+            lines.append(f"  ⚠  HASH CRACKED: {cracked}")
+        if data["paths_found"]:
+            lines.append("  Sensitive paths found:")
+            for p in data["paths_found"]: lines.append(f"    {p}")
+        sys.stdout.write(f"  {D}Getting description for port {port}...{R}\r"); sys.stdout.flush()
+        desc=ollama_describe(port,data)
+        sys.stdout.write("  "+" "*50+"\r"); sys.stdout.flush()
+        if desc:
+            lines.append("")
+            lines.append("  What this means:")
+            for sentence in desc.split(". "):
+                s=sentence.strip().rstrip(".")
+                if s: lines.append(f"    {s}.")
+        lines.append("")
+        lines.append("  How to fix it:")
+        for i,step in enumerate(fix_steps(svc),1):
+            lines.append(f"    {i}. {step}")
+    lines.append("")
+    lines.append("  "+"═"*48)
+    lines.append("  ── What to do first ──")
+    lines.append("  "+"═"*48)
+    n=1
+    for _,port,data,rl in priority:
+        svc=data["service"] or f"port {port}"
+        if data["no_auth"]:
+            lines.append(f"  {n}. [CRITICAL] Set a password on {svc} (port {port}) — it has none right now")
+            n+=1
+        for cred in data["creds_ok"]:
+            lines.append(f"  {n}. [CRITICAL] Change the password on {svc} (port {port}) — '{cred}' works")
+            n+=1
+    for _,port,data,rl in priority:
+        if rl in ("high","critical") and not data["no_auth"] and not data["creds_ok"]:
+            svc=data["service"] or f"port {port}"
+            lines.append(f"  {n}. [{rl.upper()}] Review and harden {svc} (port {port}) — see fix steps above")
+            n+=1
+    if n==1:
+        lines.append("  1. Review the fix steps for each port listed above")
+        lines.append("  2. Keep all software up to date")
+        lines.append("  3. Add firewall rules to block ports you don't need externally")
+    lines.append("")
+    return "\n".join(lines)
+
+SYSTEM="""You are an autonomous security analysis agent running an authorized penetration test.
+Investigate the target step by step using the available tools. Call ONE tool per response.
+
+Format — use EXACTLY this on its own line:
+TOOL: TOOL_NAME arg1 arg2
+
+Available tools:
+  TOOL: SCAN_PORT <port>
+  TOOL: BANNER_GRAB <port>
+  TOOL: HTTP_PROBE <port> <path>
+  TOOL: HTTP_PATHS <port>
+  TOOL: TRY_CREDS <service> <port> <user> <pass>
+  TOOL: WORDLIST <service> <port>
+  TOOL: NMAP_SCRIPT <port> <script>
+  TOOL: CRACK_HASH <hash>
+  TOOL: REPORT
+
+Strategy:
+1. SCAN_PORT and BANNER_GRAB every open port
+2. HTTP_PATHS on every web port
+3. WORDLIST on every auth service (ssh,ftp,redis,mysql,postgres,http)
+4. CRACK_HASH any hash found in banners or HTTP responses
+5. Call TOOL: REPORT when finished
+"""
+
+msgs=[
+    {"role":"system","content":SYSTEM},
+    {"role":"user","content":(
+        f"Target: {TARGET}\n\nInitial port scan:\n{INITIAL}\n\n"
+        "Investigate each service. Use WORDLIST on auth services, "
+        "HTTP_PATHS on web ports, CRACK_HASH on any hashes found. "
+        "When finished, call TOOL: REPORT."
+    )}
+]
+
+print(f"\n  {B}{C}Agent starting{R}  {D}target: {TARGET}  ·  model: {MODEL}{R}\n",flush=True)
+
+for line in INITIAL.splitlines():
+    m=re.match(r'port (\d+)/tcp:\s*(\S*)\s*(.*)',line)
+    if m:
+        p,svc,ver=m.group(1),m.group(2),m.group(3).strip()
+        ensure_port(p)
+        if svc: findings[p]["service"]=svc
+        if ver: findings[p]["version"]=ver
+
+itr=0
+while itr < MAX_IT:
+    itr+=1
+    sys.stdout.write(f"  {D}[{itr}/{MAX_IT}] thinking...{R}   \r"); sys.stdout.flush()
+    reply=ollama_chat(msgs)
+    sys.stdout.write("  "+" "*50+"\r"); sys.stdout.flush()
+    match=re.search(r'TOOL:\s*(\S[^\n]*)',reply)
+    if not match: break
+    tool_call=match.group(1).strip()
+    tool_name=tool_call.split()[0].upper()
+    args=tool_call.split()[1:]
+    print(f"  {C}▶{R}  {B}{tool_call}{R}",flush=True)
+    if tool_name=="REPORT": break
+    result="unknown tool"
+    try:
+        if   tool_name=="SCAN_PORT"   and args: result=tool_scan(args[0])
+        elif tool_name=="BANNER_GRAB" and args: result=tool_banner(args[0])
+        elif tool_name=="HTTP_PROBE"  and args: result=tool_http_probe(args[0],args[1] if len(args)>1 else "/")
+        elif tool_name=="HTTP_PATHS"  and args: result=tool_http_paths(args[0])
+        elif tool_name=="TRY_CREDS"   and len(args)>=4: result=tool_try(args[0],args[1],args[2],args[3])
+        elif tool_name=="WORDLIST"    and len(args)>=2: result=tool_wordlist(args[0],args[1])
+        elif tool_name=="NMAP_SCRIPT" and len(args)>=2: result=tool_nmap_script(args[0],args[1])
+        elif tool_name=="CRACK_HASH"  and args: result=tool_crack(args[0])
+    except Exception as e:
+        result=f"tool error: {e}"
+    print(f"  {D}{result[:100]}{'...' if len(result)>100 else ''}{R}",flush=True)
+    msgs.append({"role":"assistant","content":reply})
+    msgs.append({"role":"user","content":f"TOOL_RESULT:\n{result[:2000]}"})
+
+print(f"\n  {B}{C}Building report...{R}\n",flush=True)
+report=render_report()
+for line in report.splitlines():
+    print(f"  {line}")
+sys.stderr.write(report)
+PYEOF
+
+  local log_tmp; log_tmp=$(mktemp /tmp/kp_log_XXXXXX.txt)
+  KP_OLLAMA="$ATTACK_OLLAMA" KP_MODEL="$MODEL" KP_TARGET="$TARGET" \
+    KP_SERVICES="$service_lines" python3 "$py_agent" 2>"$log_tmp" || true
+
+  local report_text=""
+  [ -f "$log_tmp" ] && report_text=$(cat "$log_tmp")
+  rm -f "$py_agent" "$log_tmp"
+
+  attack_log_write "$TARGET" "$MODEL" "$PORTS_DESC" "$report_text"
+
+  printf "\n${C}  ────────────────────────────────────────────${R}\n"
+  printf "  ${D}Complete  ·  model: %s  ·  target: %s${R}\n" "$MODEL" "$TARGET"
+  printf "  ${D}Logged to: %s${R}\n\n" "$ATTACK_LOG"
+}
+
+attack_dispatch() {
+  case "${1:-}" in
+    config)   attack_config ;;
+    log)      attack_log_view ;;
+    allports)
+      [ -z "${2:-}" ] && { printf "  Usage: killport attack allports <ip>\n\n"; return 1; }
+      attack_run "$2" "full" ;;
+    "")
+      local C=$'\033[0;36m' D=$'\033[2m' B=$'\033[1m' R=$'\033[0m'
+      printf "\n${B}${C}  killport attack${R}  ${D}AI-powered LAN penetration testing${R}\n"
+      printf "${C}  ────────────────────────────────────────────${R}\n\n"
+      printf "  killport attack <ip>              scan 47 common ports + AI analysis\n"
+      printf "  killport attack allports <ip>     scan all 65535 ports + AI analysis\n"
+      printf "  killport attack <ip>:<port>       scan a single port + AI analysis\n"
+      printf "  killport attack config            configure Ollama host and model\n"
+      printf "  killport attack log               view attack history\n\n"
+      ;;
+    *) attack_run "$1" ;;
+  esac
+}
+
 # -------------------------------------------------------
 
 if [ $# -eq 0 ]; then
@@ -374,12 +1315,20 @@ if [ $# -eq 0 ]; then
   echo "  killport opencheck <ip>    probe an IP from this machine to check open ports"
   echo "  killport status <port>     show if a port is open or closed"
   echo "  killport ip                show IP addresses, DNS, and network info"
+  echo "  killport attack <ip>       AI pentest: scan all ports + analysis"
+  echo "  killport attack <ip>:port  AI pentest: scan single port + analysis"
+  echo "  killport attack config     configure Ollama host and model"
+  echo "  killport attack log        view attack history"
   echo "  killport update            update to the latest version"
   echo ""
   exit 0
 fi
 
 case "$1" in
+
+  attack)
+    attack_dispatch "${2:-}"
+    ;;
 
   update)
     echo "Checking for updates..."
