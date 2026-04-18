@@ -15,7 +15,7 @@ Write-Host "Installing killport..."
 New-Item -ItemType Directory -Force -Path $IMPL_DIR | Out-Null
 try {
     $content = (Invoke-WebRequest -Uri "$RAW/killport.ps1" -UseBasicParsing).Content
-    [System.IO.File]::WriteAllText("$IMPL_DIR\killport.ps1", $content, [System.Text.Encoding]::UTF8)
+    [System.IO.File]::WriteAllText("$IMPL_DIR\killport.ps1", $content, (New-Object System.Text.UTF8Encoding $True))
 } catch {
     Write-Error "Failed to download killport.ps1: $_"; exit 1
 }
