@@ -4,7 +4,7 @@ param(
     [Parameter(Mandatory=$false, Position=2)] [string]$Extra
 )
 
-$VERSION = "1.10.3"
+$VERSION = "1.10.4"
 $REPO    = "skosari/killport-win"
 $RAW     = "https://raw.githubusercontent.com/$REPO/main"
 
@@ -14,6 +14,8 @@ function wh($msg, $fg, [switch]$nl = $true) {
     if ($fg) { Write-Host $msg -ForegroundColor $fg -NoNewline:(!$nl) }
     else     { Write-Host $msg -NoNewline:(!$nl) }
 }
+
+function Get-CmdPath([string]$Name) { $c = Get-Command $Name -ErrorAction SilentlyContinue; if ($c) { $c.Source } }
 
 function Get-RemoteVersion {
     try {
@@ -197,7 +199,7 @@ function Invoke-OpenCheck($target) {
     Write-Host ""
     wh "  External Port Check" Cyan -nl:$false; wh "  -> $target" DarkGray
     Write-Rule; Write-Host ""
-    $nmap = (Get-Command nmap -ErrorAction SilentlyContinue)?.Source
+    $nmap = Get-CmdPath nmap
     if ($nmap) {
         wh "  Scanning with nmap..." DarkGray; Write-Host ""
         $portCsv = $PORTS -join ","
@@ -342,7 +344,7 @@ function Update-Killport {
     if ($batPath -and $batPath.EndsWith('.bat')) {
         $content = (Invoke-WebRequest -Uri "$RAW/killport.bat" -UseBasicParsing).Content
         $content = $content -replace "`r`n","`n" -replace "`n","`r`n"
-        [System.IO.File]::WriteAllText($batPath, $content, [System.Text.Encoding]::UTF8)
+        [System.IO.File]::WriteAllText($batPath, $content, (New-Object System.Text.UTF8Encoding $False))
     }
 
     # Update this ps1 implementation
@@ -1001,8 +1003,8 @@ function Invoke-StressRun($target) {
     $confirm = Read-Host "  Type yes to confirm"
     if ($confirm -ne "yes") { Write-Host ""; wh "  Aborted." DarkGray; Write-Host ""; return }
 
-    $py = (Get-Command python -ErrorAction SilentlyContinue)?.Source
-    if (-not $py) { $py = (Get-Command python3 -ErrorAction SilentlyContinue)?.Source }
+    $py = Get-CmdPath python
+    if (-not $py) { $py = Get-CmdPath python3 }
     if (-not $py) { wh "  Python not found. Install Python 3 to use stress testing." Yellow; return }
 
     $logDir = "$env:ProgramData\killport"
@@ -1105,7 +1107,7 @@ function Invoke-StressDispatch($sub) {
 
 function Invoke-Scan($target, $mode) {
     if (-not $target) { Write-Host ""; wh "  Usage: killport scan <ip> [all]" Yellow; Write-Host ""; return }
-    $nmap = (Get-Command nmap -ErrorAction SilentlyContinue)?.Source
+    $nmap = Get-CmdPath nmap
     if (-not $nmap) { wh "  nmap required. Download from https://nmap.org/download.html" Yellow; return }
     Write-Host ""
     wh "  killport scan" Cyan -nl; Write-Host "  $target"
@@ -1223,7 +1225,7 @@ function Sniff-Port($target) {
     Write-Host ""
     wh "  killport sniff" Cyan -nl; Write-Host "  $label  (Ctrl+C to stop)"
     Write-Rule; Write-Host ""
-    $pktmon = (Get-Command pktmon -ErrorAction SilentlyContinue)?.Source
+    $pktmon = Get-CmdPath pktmon
     if (-not $pktmon) {
         wh "  pktmon not found. Requires Windows 10 1809+ (run as Administrator)." Yellow
         wh "  Alternative: Wireshark (https://www.wireshark.org)" DarkGray
@@ -1257,7 +1259,7 @@ function Check-Vuln($target) {
     Write-Host ""
     wh "  killport vuln" Cyan -nl; wh "  $target" DarkGray; Write-Host ""
     Write-Rule; Write-Host ""
-    $nmap = (Get-Command nmap -ErrorAction SilentlyContinue)?.Source
+    $nmap = Get-CmdPath nmap
     if (-not $nmap) { wh "  nmap required for version detection. Download from https://nmap.org" Yellow; return }
     wh "  Detecting service on port $port_..." DarkGray; Write-Host ""
     $raw = & $nmap -sV -p $port_ --open -T4 $host_ 2>$null | Out-String
@@ -1270,8 +1272,8 @@ function Check-Vuln($target) {
     wh "  Version:" -nl; wh "  $ver" DarkGray; Write-Host ""
     wh "  Querying NVD database..." DarkGray; Write-Host ""
 
-    $py = (Get-Command python -ErrorAction SilentlyContinue)?.Source
-    if (-not $py) { $py = (Get-Command python3 -ErrorAction SilentlyContinue)?.Source }
+    $py = Get-CmdPath python
+    if (-not $py) { $py = Get-CmdPath python3 }
     if (-not $py) { wh "  Python required for CVE lookup." Yellow; return }
 
     $pyScript = @'
@@ -1317,7 +1319,7 @@ function Invoke-Fix($target) {
     $ip_  = $target -replace ':.*'
     $port_= $target -replace '.*:'
 
-    $nmap = (Get-Command nmap -ErrorAction SilentlyContinue)?.Source
+    $nmap = Get-CmdPath nmap
     if (-not $nmap) { wh "  nmap required. Download from https://nmap.org" Yellow; return }
 
     Write-Host ""
@@ -1355,8 +1357,8 @@ function Invoke-Fix($target) {
         }
     }
 
-    $py = (Get-Command python -ErrorAction SilentlyContinue)?.Source
-    if (-not $py) { $py = (Get-Command python3 -ErrorAction SilentlyContinue)?.Source }
+    $py = Get-CmdPath python
+    if (-not $py) { $py = Get-CmdPath python3 }
     if (-not $py) { wh "  Python required for fix generation." Yellow; return }
 
     $logDir = "$env:ProgramData\killport"
@@ -1746,7 +1748,7 @@ function Forward-Port($localPort, $target) {
     wh "  killport forward" Cyan -nl; wh "  localhost:$localPort  ->  $target" DarkGray; Write-Host ""
     Write-Rule; Write-Host ""
 
-    $ncat = (Get-Command ncat -ErrorAction SilentlyContinue)?.Source
+    $ncat = Get-CmdPath ncat
     if ($ncat) {
         wh "  ✓  ncat — forwarding port $localPort to $target" Green
         wh "  Press Ctrl+C to stop." DarkGray; Write-Host ""
