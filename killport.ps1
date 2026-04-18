@@ -4,7 +4,7 @@ param(
     [Parameter(Mandatory=$false, Position=2)] [string]$Extra
 )
 
-$VERSION = "1.10.6"
+$VERSION = "1.10.7"
 $REPO    = "skosari/killport-win"
 $RAW     = "https://raw.githubusercontent.com/$REPO/main"
 
@@ -178,7 +178,7 @@ function Status-Port($p) {
     } else {
         wh "  Firewall:  " -nl:$false; wh "CLOSED" DarkGray -nl:$false; Write-Host "  (no killport rule - external access blocked)"
     }
-    $conn = netstat -ano | Select-String ":$p\s" | Select-String /i "LISTENING"
+    $conn = netstat -ano | Where-Object { $_ -match ":$p\s" -and $_ -match "LISTENING" }
     if ($conn) {
         $procPid = (($conn | Select-Object -First 1) -split '\s+')[-1]
         try   { $name = (Get-Process -Id $procPid -ErrorAction Stop).Name }
@@ -220,7 +220,7 @@ function Invoke-OpenCheck($target) {
             $p = $_
             [System.Threading.Tasks.Task]::Run([System.Action]{
                 try {
-                    $tcp = New-Object System.Net.Sockets.TcpClient
+                    $tcp = [System.Net.Sockets.TcpClient]::new()
                     $ar = $tcp.BeginConnect($target, $p, $null, $null)
                     if ($ar.AsyncWaitHandle.WaitOne(1000)) { $tcp.EndConnect($ar); $results.Add($p) }
                     $tcp.Dispose()
@@ -254,7 +254,7 @@ function Open-Ports($target) {
         foreach ($rule in $rules) {
             $port = ($rule | Get-NetFirewallPortFilter).LocalPort
             $oc++
-            $conn = netstat -ano | Select-String ":$port\s" | Select-String /i "LISTENING"
+            $conn = netstat -ano | Where-Object { $_ -match ":$port\s" -and $_ -match "LISTENING" }
             if ($conn) {
                 $lc++
                 $procPid = (($conn | Select-Object -First 1) -split '\s+')[-1]
@@ -306,7 +306,7 @@ function Closed-Ports {
 # ── kill port ────────────────────────────────────────────────────────────────
 
 function Kill-Port($p) {
-    $conns = netstat -ano | Select-String ":$p\s" | Select-String /i "LISTENING"
+    $conns = netstat -ano | Where-Object { $_ -match ":$p\s" -and $_ -match "LISTENING" }
     if (-not $conns) { wh "Nothing running on port $p" DarkGray; return }
     $pids = $conns | ForEach-Object { ($_ -split '\s+')[-1] } | Sort-Object -Unique
     Write-Host ""
@@ -1696,7 +1696,7 @@ function Invoke-DnsRecon($domain) {
     }
 
     foreach ($type in @("A","AAAA","MX","NS","TXT")) {
-        try { $recs = Resolve-DnsName -Name $domain -Type $type -ErrorAction Stop 2>$null } catch { $recs = @() }
+        try { $recs = @(Resolve-DnsName -Name $domain -Type $type -ErrorAction Stop 2>$null | Where-Object { $_.Type -eq $type }) } catch { $recs = @() }
         Show-Recs $type $recs
     }
     Write-Host ""
