@@ -325,13 +325,32 @@ Removes the binary, implementation files, and all firewall rules created by `kil
 
 ## AI Penetration Testing
 
-`killport attack` is an agentic AI-powered pentest tool that uses a locally running [Ollama](https://ollama.com) model to investigate open ports, probe for weak credentials, check for sensitive paths, and attempt to crack discovered hashes — all from the command line.
+> **Point it at any machine on your network. Watch an AI hunt for vulnerabilities in real time.**
+
+`killport attack` is a fully agentic AI pentest tool powered by [Ollama](https://ollama.com) — your local AI, running entirely on your hardware, no cloud, no API keys. It doesn't just run a scan and hand you a wall of output. It **thinks**, **acts**, and **investigates** — probing services, testing credentials, hunting for exposed paths, and attempting to crack hashes — then delivers a plain-English security report with specific fix steps anyone can follow.
+
+**Everything runs locally. Your scan data never leaves your machine.**
+
+### Zero setup friction — missing tools install themselves
+
+When you run `killport attack`, it checks whether `nmap`, `sshpass`, and `hashcat` are installed. If any are missing, it asks to install them for you **right there** — no new terminal, no manual steps:
+
+```
+  nmap not installed — needed for port/service scanning.
+  Install nmap now via Chocolatey? [Y/n] → y
+  ... choco install nmap -y ...
+  Continuing.
+```
+
+Auto-detects your package manager: Chocolatey, winget, or Scoop. If none are found, it shows the direct download link.
 
 ### Setup
 
 1. [Install Ollama](https://ollama.com/download) and pull a model:
    ```sh
    ollama pull llama3.2
+   # or try a reasoning model:
+   ollama pull deepseek-r1:8b
    ```
 2. Configure killport to point at your Ollama instance:
    ```sh
@@ -341,33 +360,39 @@ Removes the binary, implementation files, and all firewall rules created by `kil
    - **Another LAN machine:** `192.168.x.x:11434`
    - **Remote server:** `45.76.x.x:11434` *(port 11434 must be open)*
 
-   The config screen connects to Ollama and lets you pick from your loaded models.
+   The config screen connects live to Ollama and shows you the models you have loaded — pick one by number.
 
-3. Missing tools (`nmap`, `sshpass`, `hashcat`) are detected automatically and offered for install via Chocolatey, winget, or Scoop when you run an attack.
+3. Run your first attack:
+   ```sh
+   killport attack 192.168.1.10
+   ```
+   That's it. The AI takes over from there.
 
 ### Commands
 
 ```sh
-killport attack 192.168.1.10            # scan 47 common ports
-killport attack allports 192.168.1.10   # scan all 65535 ports
-killport attack 192.168.1.10:6379       # single port deep dive
-killport attack config                  # configure Ollama
-killport attack log                     # view attack history
+killport attack 192.168.1.10            # scan 47 common ports (fast)
+killport attack allports 192.168.1.10   # scan all 65535 ports with progress bar
+killport attack 192.168.1.10:6379       # deep dive a single port
+killport attack config                  # configure Ollama host + pick model
+killport attack log                     # view full history of past attacks
 ```
 
 ### How it works
 
-The agent runs a **ReAct loop** — Ollama decides what to investigate next, calls a tool, receives the result, and iterates (up to 20 rounds). Tools available to the agent:
+The agent runs a **ReAct loop** — Ollama reasons about what to investigate next, calls a tool, receives the result, and iterates (up to 20 rounds). The AI drives the entire investigation. You just watch it work.
 
-| Tool | What it does |
+| Tool | What the AI can do |
 |---|---|
-| `SCAN_PORT` | Deep nmap scan with version detection |
-| `BANNER_GRAB` | Raw TCP banner grab, extracts hashes |
-| `HTTP_PROBE` | Fetch HTTP/HTTPS response, extract hashes |
-| `HTTP_PATHS` | Probe sensitive paths (`/admin`, `/.env`, `/actuator/env`, etc.) |
-| `WORDLIST` | Try common credentials across SSH, FTP, Redis, MySQL, PostgreSQL, HTTP |
-| `NMAP_SCRIPT` | Run nmap NSE scripts |
-| `CRACK_HASH` | Crack MD5/SHA1/SHA256/bcrypt hashes via hashcat or john + rockyou |
+| `SCAN_PORT` | Deep nmap scan with version detection on any port |
+| `BANNER_GRAB` | Raw TCP banner grab — extracts version strings and hashes |
+| `HTTP_PROBE` | Fetch HTTP/HTTPS responses — extracts embedded hashes |
+| `HTTP_PATHS` | Probe 20+ sensitive paths: `/admin`, `/.env`, `/actuator/env`, `/.git/HEAD`, etc. |
+| `WORDLIST` | Credential spray across SSH, FTP, Redis, MySQL, PostgreSQL, HTTP basic auth |
+| `NMAP_SCRIPT` | Run any nmap NSE script against any port |
+| `CRACK_HASH` | Crack MD5 / SHA1 / SHA256 / bcrypt / MD5crypt / SHA512crypt via hashcat or john + rockyou |
+
+The security report is **built programmatically** — risk levels, fix steps, and priority order are all deterministic code, not AI guesswork. Ollama contributes plain-English descriptions of each finding. The result is consistent, structured, and logged to `%APPDATA%\killport\attack.log` after every run.
 
 ### Example output
 
