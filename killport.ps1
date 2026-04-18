@@ -4,7 +4,7 @@ param(
     [Parameter(Mandatory=$false, Position=2)] [string]$Extra
 )
 
-$VERSION = "1.8.0"
+$VERSION = "1.10.0"
 $REPO    = "skosari/killport-win"
 $RAW     = "https://raw.githubusercontent.com/$REPO/main"
 
@@ -929,6 +929,478 @@ function Invoke-AttackDispatch($sub, $arg) {
     }
 }
 
+# ── stress ───────────────────────────────────────────────────────────────────
+
+function Invoke-StressRun($target) {
+    if ($target -notmatch '^(.+):(\d+)$') {
+        Write-Host ""; wh "  Usage: killport stress <ip:port>" Yellow; Write-Host ""; return
+    }
+    $ip = $Matches[1]; $port = [int]$Matches[2]
+    $svc = switch ($port) { 80 {"http"} 8080 {"http"} 8000 {"http"} 3000 {"http"} 3001 {"http"}
+                             443 {"https"} 8443 {"https"} 6379 {"redis"} default {"tcp"} }
+    Write-Host ""
+    wh "  killport stress" Cyan; wh "  authorized connection flood testing" DarkGray; Write-Host ""
+    Write-Rule; Write-Host ""
+    Write-Host "  Target:   $target  (service: $svc)"
+    Write-Host ""
+    $dur = Read-Host "  Duration in seconds [default 30]"
+    if ($dur -notmatch '^\d+$' -or [int]$dur -lt 1) { $dur = 30 }
+    $dur = [int]$dur
+    Write-Host ""
+    wh "  ⚠  This will flood ${ip}:${port} for ${dur}s at up to 20 concurrent connections." Yellow
+    wh "  Only test systems you own or have written authorization to test." DarkGray
+    Write-Host ""
+    $confirm = Read-Host "  Type yes to confirm"
+    if ($confirm -ne "yes") { Write-Host ""; wh "  Aborted." DarkGray; Write-Host ""; return }
+
+    $py = (Get-Command python -ErrorAction SilentlyContinue)?.Source
+    if (-not $py) { $py = (Get-Command python3 -ErrorAction SilentlyContinue)?.Source }
+    if (-not $py) { wh "  Python not found. Install Python 3 to use stress testing." Yellow; return }
+
+    $logDir = "$env:ProgramData\killport"
+    if (-not (Test-Path $logDir)) { New-Item -ItemType Directory -Force -Path $logDir | Out-Null }
+    $logPath = "$logDir\attack_log.txt"
+
+    $pyScript = @'
+import sys,socket,threading,time,datetime
+try: import ssl as _ssl; _HAS_SSL=True
+except: _HAS_SSL=False
+TARGET=sys.argv[1]; PORT=int(sys.argv[2]); SVC=sys.argv[3]
+SECS=int(sys.argv[4]); THREADS=int(sys.argv[5]); LOG=sys.argv[6]
+sent=0; errs=0; peak=0; lock=threading.Lock(); stop=threading.Event()
+B="\033[1m"; C="\033[0;36m"; D="\033[2m"; G="\033[0;32m"; RE="\033[0;31m"; R="\033[0m"
+def worker():
+    global sent,errs
+    while not stop.is_set():
+        try:
+            s=socket.socket(socket.AF_INET,socket.SOCK_STREAM); s.settimeout(3)
+            if SVC=="https" and _HAS_SSL:
+                ctx=_ssl.create_default_context(); ctx.check_hostname=False; ctx.verify_mode=_ssl.CERT_NONE
+                s=ctx.wrap_socket(s,server_hostname=TARGET)
+            s.connect((TARGET,PORT))
+            if SVC in ("http","https"):
+                s.sendall((f"GET / HTTP/1.1\r\nHost: {TARGET}\r\nUser-Agent: killport-stress/1.0\r\nConnection: close\r\n\r\n").encode())
+                s.recv(512)
+            elif SVC=="redis": s.sendall(b"PING\r\n"); s.recv(32)
+            s.close()
+            with lock: sent+=1
+        except:
+            with lock: errs+=1
+def stat_loop():
+    global peak
+    SP=["|-", "/|", "-|", "\\|"]
+    start=time.time(); prev=0; tick=0
+    while not stop.is_set():
+        elapsed=time.time()-start; rem=max(0,SECS-elapsed)
+        with lock: s=sent; e=errs
+        ps=s-prev; prev=s
+        with lock:
+            if ps>peak: peak=ps
+        avg=s/max(elapsed,0.1)
+        pct=min(100,int(elapsed/SECS*100)); bw=24
+        bar="="*int(pct*bw/100)+"-"*(bw-int(pct*bw/100))
+        sys.stdout.write(f"\r  {SP[tick%len(SP)]}  [{bar}]  {B}{s:,}{R} req  {avg:.0f}/s  {e} err  {rem:.0f}s left   ")
+        sys.stdout.flush(); tick+=1; time.sleep(1)
+ts=[threading.Thread(target=worker,daemon=True) for _ in range(THREADS)]
+for t in ts: t.start()
+threading.Thread(target=stat_loop,daemon=True).start()
+time.sleep(SECS); stop.set(); time.sleep(0.5)
+sys.stdout.write("\r"+" "*80+"\r"); sys.stdout.flush()
+with lock: total=sent; total_err=errs; pk=peak
+avg=total/max(SECS,1); ep=total_err*100//(total+total_err) if (total+total_err) else 0
+still_up=False
+try:
+    cs=socket.socket(socket.AF_INET,socket.SOCK_STREAM); cs.settimeout(3); cs.connect((TARGET,PORT)); cs.close(); still_up=True
+except: pass
+st_txt="ONLINE - still responding" if still_up else "NOT RESPONDING - may be down"
+now=datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+sep="="*54
+report=(f"{sep}\n  STRESS TEST  {TARGET}:{PORT}  {now}\n{sep}\n"
+        f"  Service:   {SVC}\n  Duration:  {SECS}s  Threads: {THREADS}\n"
+        f"  Requests:  {total:,}  ({avg:.0f}/s avg,  {pk}/s peak)\n"
+        f"  Errors:    {total_err:,}  ({ep}%)\n  After:     {st_txt}\n{sep}\n")
+print(f"  {sep}"); print(f"  STRESS TEST COMPLETE"); print(f"  {sep}")
+print(f"  Service:   {SVC}  ({TARGET}:{PORT})")
+print(f"  Duration:  {SECS}s  Threads: {THREADS}")
+print(f"  Requests:  {B}{total:,}{R}  ({avg:.0f}/s avg  {pk}/s peak)")
+print(f"  Errors:    {total_err:,}  ({ep}%)")
+print(f"  After:     {st_txt}")
+print(f"  {sep}")
+with open(LOG,"a",encoding="utf-8") as f: f.write(report)
+'@
+    $pyFile = "$env:TEMP\kp_stress_$(Get-Random).py"
+    [System.IO.File]::WriteAllText($pyFile, $pyScript, (New-Object System.Text.UTF8Encoding $true))
+    try { & $py $pyFile $ip $port $svc $dur 20 $logPath } finally { Remove-Item $pyFile -ErrorAction SilentlyContinue }
+    Write-Host ""
+    wh "  Logged to: $logPath" DarkGray; Write-Host ""
+}
+
+function Invoke-StressDispatch($sub) {
+    if (-not $sub) {
+        Write-Host ""
+        wh "  killport stress" Cyan; wh "  authorized connection flood testing" DarkGray; Write-Host ""
+        Write-Rule; Write-Host ""
+        Write-Host "  killport stress <ip:port>     flood test a single service"
+        Write-Host ""
+        wh "  Examples:" DarkGray
+        wh "    killport stress 192.168.1.10:80     HTTP flood" DarkGray
+        wh "    killport stress 192.168.1.10:22     TCP connection flood" DarkGray
+        wh "    killport stress 192.168.1.10:6379   Redis PING flood" DarkGray
+        Write-Host ""
+        wh "  Requires authorization. Only test systems you own or have permission to test." DarkGray
+        Write-Host ""; return
+    }
+    Invoke-StressRun $sub
+}
+
+# ── scan ─────────────────────────────────────────────────────────────────────
+
+function Invoke-Scan($target, $mode) {
+    if (-not $target) { Write-Host ""; wh "  Usage: killport scan <ip> [all]" Yellow; Write-Host ""; return }
+    $nmap = (Get-Command nmap -ErrorAction SilentlyContinue)?.Source
+    if (-not $nmap) { wh "  nmap required. Download from https://nmap.org/download.html" Yellow; return }
+    Write-Host ""
+    wh "  killport scan" Cyan -nl; Write-Host "  $target"
+    Write-Rule; Write-Host ""
+    $args_ = @("-sV","-T4","--open")
+    if ($mode -eq "all") { $args_ = @("-p-") + $args_; wh "  Scanning all 65535 ports - this may take several minutes..." DarkGray }
+    else { wh "  Scanning common ports..." DarkGray }
+    Write-Host ""
+    $raw = & $nmap @args_ $target 2>$null | Out-String
+    $found = $false
+    wh ("  {0,-7}  {1,-18}  {2}" -f "PORT","SERVICE","VERSION") DarkGray
+    wh ("  " + ("-"*54)) DarkGray
+    foreach ($line in $raw -split "`n") {
+        if ($line -match '^(\d+)/tcp\s+open\s+(\S+)\s*(.*)') {
+            $p=$Matches[1]; $s=$Matches[2]; $v=$Matches[3].Trim()
+            wh ("  {0,-7}" -f $p) Green -nl; Write-Host ("  {0,-18}  " -f $s) -NoNewline; wh $v DarkGray
+            $found = $true
+        }
+    }
+    if (-not $found) { wh "  No open ports found." DarkGray }
+    $lat = [regex]::Match($raw,'[\d.]+ s latency').Value
+    Write-Host ""
+    if ($lat) { wh "  Host latency: $lat" DarkGray; Write-Host "" }
+}
+
+# ── watch ────────────────────────────────────────────────────────────────────
+
+function Watch-PortConnections($port) {
+    if (-not $port) { Write-Host ""; wh "  Usage: killport watch <port>" Yellow; Write-Host ""; return }
+    Write-Host ""
+    wh "  killport watch" Cyan -nl; Write-Host "  port $port  (Ctrl+C to stop)"
+    Write-Rule; Write-Host ""
+    wh ("  {0,-10}  {1,-26}  {2,-14}  {3}" -f "TIME","REMOTE","STATE","PROCESS") DarkGray
+    wh ("  " + ("-"*62)) DarkGray
+    $seen = @{}
+    try {
+        while ($true) {
+            $conns = netstat -n 2>$null | Where-Object { $_ -match "\b$port\b" }
+            foreach ($line in $conns) {
+                $parts = $line.Trim() -split '\s+'
+                if ($parts.Count -lt 4) { continue }
+                $remote = $parts[2]; $state = if ($parts.Count -ge 4) { $parts[3] } else { "-" }
+                $key = "$remote|$state"
+                if (-not $seen.ContainsKey($key)) {
+                    $seen[$key] = $true
+                    $ts = (Get-Date).ToString("HH:mm:ss")
+                    $col = switch ($state) { "CLOSE_WAIT" {"Yellow"} "TIME_WAIT" {"Yellow"} "SYN_RECEIVED" {"Red"} default {"Green"} }
+                    Write-Host ("  {0,-10}  {1,-26}  " -f $ts,$remote) -NoNewline
+                    wh ("{0,-14}" -f $state) $col -nl; Write-Host ""
+                }
+            }
+            Start-Sleep -Milliseconds 500
+        }
+    } catch { wh "  Stopped." DarkGray; Write-Host "" }
+}
+
+# ── cert ─────────────────────────────────────────────────────────────────────
+
+function Check-Cert($target) {
+    if (-not $target) { Write-Host ""; wh "  Usage: killport cert <host:port> or <domain>" Yellow; Write-Host ""; return }
+    $host_ = if ($target -match '^(.+):(\d+)$') { $Matches[1] } else { $target }
+    $port_ = if ($target -match ':(\d+)$') { [int]$Matches[1] } else { 443 }
+    Write-Host ""
+    wh "  killport cert" Cyan -nl; wh "  ${host_}:${port_}" DarkGray; Write-Host ""
+    Write-Rule; Write-Host ""
+    wh "  Connecting..." DarkGray; Write-Host ""
+    try {
+        $tcp = New-Object System.Net.Sockets.TcpClient($host_, $port_)
+        $ssl = New-Object System.Net.Security.SslStream($tcp.GetStream(), $false,
+            { param($s,$c,$ch,$e) $true })
+        $ssl.AuthenticateAsClient($host_)
+        $cert = [System.Security.Cryptography.X509Certificates.X509Certificate2]$ssl.RemoteCertificate
+        $ssl.Dispose(); $tcp.Dispose()
+
+        $subject  = $cert.Subject
+        $issuer   = $cert.Issuer
+        $notAfter = $cert.NotAfter
+        $daysLeft = ([int](($notAfter - (Get-Date)).TotalDays))
+        $expCol   = if ($daysLeft -lt 30) {"Red"} elseif ($daysLeft -lt 90) {"Yellow"} else {"Green"}
+
+        wh "  Subject :" -nl; wh "  $subject" DarkGray
+        wh "  Issuer  :" -nl; wh "  $issuer" DarkGray
+        Write-Host "  Expires : " -NoNewline
+        wh "$($notAfter.ToString('yyyy-MM-dd'))  ($daysLeft days)" $expCol
+
+        $sanExt = $cert.Extensions | Where-Object { $_.Oid.FriendlyName -eq "Subject Alternative Name" }
+        if ($sanExt) {
+            wh "  SANs    :" DarkGray
+            $sanExt.Format($true) -split "`n" | Where-Object { $_ -match 'DNS Name' } | ForEach-Object {
+                wh ("    " + ($_ -replace 'DNS Name=','').Trim()) DarkGray
+            }
+        }
+        wh "  Protocol: $($ssl.SslProtocol)" DarkGray
+        wh "  Cipher  : $($ssl.CipherAlgorithm)" DarkGray
+    } catch {
+        wh "  Could not retrieve certificate from ${host_}:${port_} — $_" Red
+    }
+    Write-Host ""
+}
+
+# ── sniff ────────────────────────────────────────────────────────────────────
+
+function Sniff-Port($port) {
+    if (-not $port) { Write-Host ""; wh "  Usage: killport sniff <port>" Yellow; Write-Host ""; return }
+    Write-Host ""
+    wh "  killport sniff" Cyan -nl; Write-Host "  port $port  (Ctrl+C to stop)"
+    Write-Rule; Write-Host ""
+    $pktmon = (Get-Command pktmon -ErrorAction SilentlyContinue)?.Source
+    if (-not $pktmon) {
+        wh "  pktmon not found. Requires Windows 10 1809+ (run as Administrator)." Yellow
+        wh "  Alternative: Wireshark (https://www.wireshark.org)" DarkGray
+        Write-Host ""; return
+    }
+    wh "  Starting pktmon capture on port $port. Requires Administrator." DarkGray
+    wh "  Press Ctrl+C to stop." DarkGray; Write-Host ""
+    try {
+        & pktmon filter add -p $port 2>$null | Out-Null
+        & pktmon start --etw -l real-time 2>$null | ForEach-Object {
+            $ts = (Get-Date).ToString("HH:mm:ss.fff")
+            wh "  $ts  " DarkGray -nl; Write-Host $_
+        }
+    } finally {
+        & pktmon stop 2>$null | Out-Null
+        & pktmon filter remove 2>$null | Out-Null
+        Write-Host ""
+    }
+}
+
+# ── vuln ─────────────────────────────────────────────────────────────────────
+
+function Check-Vuln($target) {
+    if (-not $target -or $target -notmatch ':') {
+        Write-Host ""; wh "  Usage: killport vuln <ip:port>" Yellow; Write-Host ""; return
+    }
+    $host_ = $target -replace ':.*'
+    $port_ = $target -replace '.*:'
+    Write-Host ""
+    wh "  killport vuln" Cyan -nl; wh "  $target" DarkGray; Write-Host ""
+    Write-Rule; Write-Host ""
+    $nmap = (Get-Command nmap -ErrorAction SilentlyContinue)?.Source
+    if (-not $nmap) { wh "  nmap required for version detection. Download from https://nmap.org" Yellow; return }
+    wh "  Detecting service on port $port_..." DarkGray; Write-Host ""
+    $raw = & $nmap -sV -p $port_ --open -T4 $host_ 2>$null | Out-String
+    $svcLine = ($raw -split "`n" | Where-Object { $_ -match "${port_}/tcp" } | Select-Object -First 1)
+    if (-not $svcLine) { wh "  Could not detect service on ${host_}:${port_}" Yellow; Write-Host ""; return }
+    $parts = $svcLine.Trim() -split '\s+',5
+    $svc = $parts[2]; $ver = if ($parts.Count -ge 4) { $parts[3..($parts.Count-1)] -join " " } else { "unknown" }
+    if (-not $svc -or $svc -eq "open") { wh "  Could not detect service on ${host_}:${port_}" Yellow; Write-Host ""; return }
+    wh "  Service:" -nl; Write-Host "  $svc"
+    wh "  Version:" -nl; wh "  $ver" DarkGray; Write-Host ""
+    wh "  Querying NVD database..." DarkGray; Write-Host ""
+
+    $py = (Get-Command python -ErrorAction SilentlyContinue)?.Source
+    if (-not $py) { $py = (Get-Command python3 -ErrorAction SilentlyContinue)?.Source }
+    if (-not $py) { wh "  Python required for CVE lookup." Yellow; return }
+
+    $pyScript = @'
+import sys,json,urllib.request,urllib.parse
+svc=sys.argv[1]; ver=sys.argv[2]
+query=urllib.parse.quote(f"{svc} {ver.split()[0]}")
+B="\033[1m"; D="\033[2m"; G="\033[0;32m"; Y="\033[0;33m"; RE="\033[0;31m"; R="\033[0m"
+SC={"CRITICAL":RE,"HIGH":RE,"MEDIUM":Y,"LOW":G,"NONE":D}
+try:
+    url=f"https://services.nvd.nist.gov/rest/json/cves/2.0?keywordSearch={query}&resultsPerPage=10"
+    req=urllib.request.Request(url,headers={"User-Agent":"killport/1.0"})
+    with urllib.request.urlopen(req,timeout=12) as r: obj=json.loads(r.read())
+    vulns=obj.get("vulnerabilities",[]); total=obj.get("totalResults",len(vulns))
+    if not vulns: print(f"  {G}No CVEs found for this service/version.{R}"); sys.exit(0)
+    print(f"  {B}{total}{R} CVE(s) found - showing top {len(vulns)}:\n")
+    for v in vulns:
+        c=v.get("cve",{})
+        cid=c.get("id","?")
+        desc=next((d["value"] for d in c.get("descriptions",[]) if d.get("lang")=="en"),"")[:120]
+        sev,score="UNKNOWN",""
+        for mk in ("cvssMetricV31","cvssMetricV30","cvssMetricV2"):
+            if mk in c.get("metrics",{}):
+                m0=c["metrics"][mk][0]; cd=m0.get("cvssData",{})
+                sev=cd.get("baseSeverity",m0.get("baseSeverity","?")); score=str(cd.get("baseScore",""))
+                break
+        sc=SC.get(sev.upper(),D)
+        print(f"  {B}{cid}{R}  {sc}[{sev}  {score}]{R}")
+        print(f"  {D}{desc}{'...' if len(desc)==120 else ''}{R}\n")
+except Exception as e: print(f"  Error: {e}")
+'@
+    $pyFile = "$env:TEMP\kp_vuln_$(Get-Random).py"
+    [System.IO.File]::WriteAllText($pyFile, $pyScript, (New-Object System.Text.UTF8Encoding $true))
+    try { & $py $pyFile $svc ($ver -replace '\s+',' ') } finally { Remove-Item $pyFile -ErrorAction SilentlyContinue }
+    Write-Host ""
+}
+
+# ── audit ────────────────────────────────────────────────────────────────────
+
+function Audit-Firewall {
+    Write-Host ""
+    wh "  killport audit" Cyan -nl; wh "  firewall rule review" DarkGray; Write-Host ""
+    Write-Rule; Write-Host ""
+    wh "  Windows Firewall rules (inbound, enabled):" DarkGray; Write-Host ""
+    $rules = $null
+    try {
+        $rules = Get-NetFirewallRule -Direction Inbound -Enabled True -ErrorAction Stop |
+            Select-Object DisplayName,Action,Profile | Sort-Object Action
+    } catch {
+        try {
+            $raw = netsh advfirewall firewall show rule name=all dir=in 2>$null
+            Write-Host ($raw | Out-String)
+            return
+        } catch { wh "  Could not retrieve firewall rules. Try running as Administrator." Yellow; Write-Host ""; return }
+    }
+    if (-not $rules) { wh "  No enabled inbound rules found." DarkGray; Write-Host ""; return }
+
+    $findings = 0
+    foreach ($r in $rules | Where-Object { $_.Action -eq "Allow" }) {
+        $name = $r.DisplayName
+        $dangerPorts = @{ 3306="MySQL"; 5432="PostgreSQL"; 6379="Redis"; 27017="MongoDB"; 9200="Elasticsearch"; 11211="Memcached" }
+        foreach ($dp in $dangerPorts.Keys) {
+            $filter = Get-NetFirewallRule -DisplayName $r.DisplayName -ErrorAction SilentlyContinue |
+                Get-NetFirewallPortFilter -ErrorAction SilentlyContinue
+            if ($filter -and $filter.LocalPort -eq $dp) {
+                wh "  ⚠  Port $dp ($($dangerPorts[$dp])) is allowed inbound — confirm restricted to trusted IPs." Yellow
+                $findings++
+            }
+        }
+    }
+
+    $allowAll = $rules | Where-Object { $_.Action -eq "Allow" -and $_.DisplayName -match "All|Any" }
+    if ($allowAll) { wh "  ⚠  Broad allow-all rules detected — review these carefully." Yellow; $findings++ }
+
+    $blockCount = ($rules | Where-Object { $_.Action -eq "Block" }).Count
+    if ($blockCount -gt 0) { wh "  ✓  $blockCount explicit block rule(s) present." Green }
+    else { wh "  ⚠  No explicit block rules found." Yellow; $findings++ }
+
+    if ($findings -eq 0) { wh "  ✓  No critical issues detected." Green }
+    Write-Host ""
+    wh "  Run 'killport openports' to cross-reference currently exposed ports." DarkGray
+    Write-Host ""
+}
+
+# ── dns ──────────────────────────────────────────────────────────────────────
+
+function Invoke-DnsRecon($domain) {
+    if (-not $domain) { Write-Host ""; wh "  Usage: killport dns <domain>" Yellow; Write-Host ""; return }
+    Write-Host ""
+    wh "  killport dns" Cyan -nl; wh "  $domain" DarkGray; Write-Host ""
+    Write-Rule; Write-Host ""
+
+    function Show-Recs($label, $records) {
+        wh ("  {0,-8}" -f $label) -nl
+        if (-not $records -or $records.Count -eq 0) { wh "  (none)" DarkGray; return }
+        $first = $true
+        foreach ($r in $records) {
+            $val = if ($r.PSObject.Properties["IPAddress"]) { $r.IPAddress }
+                   elseif ($r.PSObject.Properties["NameExchange"]) { "$($r.Preference) $($r.NameExchange)" }
+                   elseif ($r.PSObject.Properties["NameHost"]) { $r.NameHost }
+                   elseif ($r.PSObject.Properties["Strings"]) { $r.Strings -join " " }
+                   else { $r.ToString() }
+            if ($first) { wh "  $val" DarkGray; $first = $false } else { wh "          $val" DarkGray }
+        }
+    }
+
+    foreach ($type in @("A","AAAA","MX","NS","TXT")) {
+        try { $recs = Resolve-DnsName -Name $domain -Type $type -ErrorAction Stop 2>$null } catch { $recs = @() }
+        Show-Recs $type $recs
+    }
+    Write-Host ""
+
+    # Reverse DNS for A records
+    try {
+        $aRecs = Resolve-DnsName -Name $domain -Type A -ErrorAction SilentlyContinue 2>$null
+        if ($aRecs) {
+            wh "  REVERSE " DarkGray
+            foreach ($r in $aRecs | Where-Object { $_.IPAddress }) {
+                $rev = try { (Resolve-DnsName -Name $r.IPAddress -ErrorAction SilentlyContinue).NameHost } catch { "(no PTR)" }
+                wh "    $($r.IPAddress)  ->  $rev" DarkGray
+            }
+            Write-Host ""
+        }
+    } catch {}
+
+    # Zone transfer attempt
+    wh "  AXFR    " DarkGray
+    try {
+        $nsRecs = Resolve-DnsName -Name $domain -Type NS -ErrorAction SilentlyContinue 2>$null
+        $axfrOk = $false
+        foreach ($ns in $nsRecs | Where-Object { $_.NameHost }) {
+            $nsHost = $ns.NameHost.TrimEnd(".")
+            try {
+                $result = & nslookup -type=AXFR $domain $nsHost 2>&1 | Out-String
+                if ($result -notmatch "refused|failed|error|SERVFAIL" -and $result -match "\bIN\b") {
+                    wh "    ⚠  Zone transfer ALLOWED from $nsHost — misconfiguration!" Red; $axfrOk = $true
+                }
+            } catch {}
+        }
+        if (-not $axfrOk) { wh "    ✓  Zone transfers blocked." Green }
+    } catch { wh "    (could not test zone transfer)" DarkGray }
+    Write-Host ""
+}
+
+# ── forward ──────────────────────────────────────────────────────────────────
+
+function Forward-Port($localPort, $target) {
+    if (-not $localPort -or -not $target) {
+        Write-Host ""
+        wh "  Usage: killport forward <local-port> <host:port>" Yellow
+        wh "  Example: killport forward 8080 192.168.1.10:80" DarkGray
+        Write-Host ""; return
+    }
+    if ($target -notmatch '^(.+):(\d+)$') { wh "  Target must be host:port" Yellow; return }
+    $tHost = $Matches[1]; $tPort = $Matches[2]
+    Write-Host ""
+    wh "  killport forward" Cyan -nl; wh "  localhost:$localPort  ->  $target" DarkGray; Write-Host ""
+    Write-Rule; Write-Host ""
+
+    $ncat = (Get-Command ncat -ErrorAction SilentlyContinue)?.Source
+    if ($ncat) {
+        wh "  ✓  ncat — forwarding port $localPort to $target" Green
+        wh "  Press Ctrl+C to stop." DarkGray; Write-Host ""
+        try {
+            while ($true) {
+                & $ncat -l $localPort -c "ncat $tHost $tPort" 2>$null
+            }
+        } catch { wh "  Forward stopped." DarkGray }
+    } else {
+        wh "  Using .NET socket forwarder (single connection at a time)" DarkGray
+        wh "  Install ncat for full multi-connection support: https://nmap.org" DarkGray
+        wh "  Press Ctrl+C to stop." DarkGray; Write-Host ""
+        try {
+            $listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Any, [int]$localPort)
+            $listener.Start()
+            wh "  Listening on port $localPort..." Green; Write-Host ""
+            while ($true) {
+                $client = $listener.AcceptTcpClient()
+                $remote = [System.Net.Sockets.TcpClient]::new($tHost, [int]$tPort)
+                $cs = $client.GetStream(); $rs = $remote.GetStream()
+                $t1 = [System.Threading.Tasks.Task]::Run({ try { $cs.CopyTo($rs) } catch {} })
+                $t2 = [System.Threading.Tasks.Task]::Run({ try { $rs.CopyTo($cs) } catch {} })
+                [System.Threading.Tasks.Task]::WhenAny($t1,$t2) | Out-Null
+                $client.Dispose(); $remote.Dispose()
+            }
+        } catch { wh "  Forward stopped." DarkGray }
+        finally { if ($listener) { $listener.Stop() }; Write-Host "" }
+    }
+}
+
 # ── main ─────────────────────────────────────────────────────────────────────
 
 if (-not $Command) {
@@ -943,6 +1415,16 @@ if (-not $Command) {
     Write-Host "  killport closedports       show all listening ports with no external access"
     Write-Host "  killport status <port>     show if a port is open or closed"
     Write-Host "  killport ip                show IP addresses and network info"
+    Write-Host "  killport scan <ip>         scan ports on a remote host (no AI)"
+    Write-Host "  killport scan <ip> all     scan all 65535 ports on a remote host"
+    Write-Host "  killport watch <port>      monitor live connections to a local port"
+    Write-Host "  killport cert <host:port>  inspect TLS certificate (expiry, SANs, cipher)"
+    Write-Host "  killport sniff <port>      capture and display traffic on a port"
+    Write-Host "  killport vuln <ip:port>    detect service version + query CVE database"
+    Write-Host "  killport audit             review firewall rules with plain-English findings"
+    Write-Host "  killport dns <domain>      DNS recon: A/MX/TXT/NS/AXFR zone transfer test"
+    Write-Host "  killport forward <p> <h:p> forward a local port to a remote host:port"
+    Write-Host "  killport stress <ip:port>  authorized connection flood / stress test"
     Write-Host "  killport update            update to the latest version"
     Write-Host "  killport uninstall         remove killport and all firewall rules"
     Write-Host ""
@@ -962,6 +1444,15 @@ switch ($Command.ToLower()) {
     "closedports" { Closed-Ports }
     "ip"          { Show-IP }
     "attack"      { Invoke-AttackDispatch $Port $Extra }
+    "stress"      { Invoke-StressDispatch $Port }
+    "scan"        { Invoke-Scan $Port $Extra }
+    "watch"       { Watch-PortConnections $Port }
+    "cert"        { Check-Cert $Port }
+    "sniff"       { Sniff-Port $Port }
+    "vuln"        { Check-Vuln $Port }
+    "audit"       { Audit-Firewall }
+    "dns"         { Invoke-DnsRecon $Port }
+    "forward"     { Forward-Port $Port $Extra }
     "status"      { if (-not $Port) { Write-Host "Usage: killport status <port>" } else { Status-Port $Port } }
     "open"        { if (-not $Port) { Write-Host "Usage: killport open <port>" } else { Open-Port $Port } }
     "close"       { if (-not $Port) { Write-Host "Usage: killport close <port>" } else { Close-Port $Port } }
