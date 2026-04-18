@@ -4,7 +4,7 @@ param(
     [Parameter(Mandatory=$false, Position=2)] [string]$Extra
 )
 
-$VERSION = "1.10.9"
+$VERSION = "1.10.10"
 $REPO    = "skosari/killport-win"
 $RAW     = "https://raw.githubusercontent.com/$REPO/main"
 
@@ -1635,10 +1635,12 @@ function Audit-Firewall {
     wh "  killport audit" Cyan -nl; wh "  firewall rule review" DarkGray; Write-Host ""
     Write-Rule; Write-Host ""
     wh "  Windows Firewall rules (inbound, enabled):" DarkGray; Write-Host ""
+
     $rules = $null
     try {
-        $rules = Get-NetFirewallRule -Direction Inbound -Enabled True -ErrorAction Stop |
-            Select-Object DisplayName,Action,Profile | Sort-Object Action
+        Write-Host -NoNewline "  Loading firewall rules..."
+        $rules = Get-NetFirewallRule -Direction Inbound -Enabled True -ErrorAction Stop
+        Write-Host "`r  $($rules.Count) inbound rules loaded.        "
     } catch {
         try {
             $raw = netsh advfirewall firewall show rule name=all dir=in 2>$null
@@ -1648,19 +1650,26 @@ function Audit-Firewall {
     }
     if (-not $rules) { wh "  No enabled inbound rules found." DarkGray; Write-Host ""; return }
 
-    $findings = 0
-    foreach ($r in $rules | Where-Object { $_.Action -eq "Allow" }) {
-        $name = $r.DisplayName
-        $dangerPorts = @{ 3306="MySQL"; 5432="PostgreSQL"; 6379="Redis"; 27017="MongoDB"; 9200="Elasticsearch"; 11211="Memcached" }
-        foreach ($dp in $dangerPorts.Keys) {
-            $filter = Get-NetFirewallRule -DisplayName $r.DisplayName -ErrorAction SilentlyContinue |
-                Get-NetFirewallPortFilter -ErrorAction SilentlyContinue
-            if ($filter -and $filter.LocalPort -eq $dp) {
-                wh "  ⚠  Port $dp ($($dangerPorts[$dp])) is allowed inbound — confirm restricted to trusted IPs." Yellow
-                $findings++
-            }
+    $dangerPorts = @{ 3306="MySQL"; 5432="PostgreSQL"; 6379="Redis"; 27017="MongoDB"; 9200="Elasticsearch"; 11211="Memcached" }
+    $allowRules  = @($rules | Where-Object { $_.Action -eq "Allow" })
+    $total       = $allowRules.Count
+    $findings    = 0
+    $i           = 0
+
+    Write-Host ""
+    foreach ($r in $allowRules) {
+        $i++
+        Write-Host -NoNewline ("`r  Checking rule $i / $total ...   ")
+        $filter    = $r | Get-NetFirewallPortFilter -ErrorAction SilentlyContinue
+        $localPort = $filter.LocalPort -as [int]
+        if ($localPort -and $dangerPorts.ContainsKey($localPort)) {
+            Write-Host ""
+            wh "  ⚠  Port $localPort ($($dangerPorts[$localPort])) is allowed inbound — confirm restricted to trusted IPs." Yellow
+            $findings++
         }
     }
+    Write-Host ("`r  Checked $total allow rules.          ")
+    Write-Host ""
 
     $allowAll = $rules | Where-Object { $_.Action -eq "Allow" -and $_.DisplayName -match "All|Any" }
     if ($allowAll) { wh "  ⚠  Broad allow-all rules detected — review these carefully." Yellow; $findings++ }
