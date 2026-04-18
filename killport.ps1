@@ -4,7 +4,7 @@ param(
     [Parameter(Mandatory=$false, Position=2)] [string]$Extra
 )
 
-$VERSION = "1.10.4"
+$VERSION = "1.10.5"
 $REPO    = "skosari/killport-win"
 $RAW     = "https://raw.githubusercontent.com/$REPO/main"
 
@@ -73,10 +73,10 @@ function List-Ports {
     $seen = @{}
     netstat -ano | Select-String "LISTENING" | ForEach-Object {
         $p = ($_ -split '\s+') | Where-Object { $_ -ne '' }
-        $addr = $p[1]; $pid = $p[-1]
-        if ($seen["$addr-$pid"]) { return }
-        $seen["$addr-$pid"] = $true
-        try   { $name = (Get-Process -Id $pid -ErrorAction Stop).Name }
+        $addr = $p[1]; $procPid = $p[-1]
+        if ($seen["$addr-$procPid"]) { return }
+        $seen["$addr-$procPid"] = $true
+        try   { $name = (Get-Process -Id $procPid -ErrorAction Stop).Name }
         catch { $name = "(unknown)" }
         wh "  " -nl:$false; wh "●" Green -nl:$false
         Write-Host ("  {0,-28} " -f $addr) -NoNewline
@@ -180,10 +180,10 @@ function Status-Port($p) {
     }
     $conn = netstat -ano | Select-String ":$p\s" | Select-String /i "LISTENING"
     if ($conn) {
-        $pid = (($conn | Select-Object -First 1) -split '\s+')[-1]
-        try   { $name = (Get-Process -Id $pid -ErrorAction Stop).Name }
+        $procPid = (($conn | Select-Object -First 1) -split '\s+')[-1]
+        try   { $name = (Get-Process -Id $procPid -ErrorAction Stop).Name }
         catch { $name = "?" }
-        wh "  Listening: " -nl:$false; wh "YES" Green -nl:$false; Write-Host "  (PID: $pid - $name)"
+        wh "  Listening: " -nl:$false; wh "YES" Green -nl:$false; Write-Host "  (PID: $procPid - $name)"
     } else {
         wh "  Listening: " -nl:$false; wh "NO" DarkGray -nl:$false; Write-Host "  (nothing is running on this port)"
     }
@@ -257,8 +257,8 @@ function Open-Ports($target) {
             $conn = netstat -ano | Select-String ":$port\s" | Select-String /i "LISTENING"
             if ($conn) {
                 $lc++
-                $pid = (($conn | Select-Object -First 1) -split '\s+')[-1]
-                try { $name = (Get-Process -Id $pid -ErrorAction Stop).Name } catch { $name = "unknown" }
+                $procPid = (($conn | Select-Object -First 1) -split '\s+')[-1]
+                try { $name = (Get-Process -Id $procPid -ErrorAction Stop).Name } catch { $name = "unknown" }
                 wh "  " -nl:$false; wh "●" Green -nl:$false
                 Write-Host ("  {0,-8}  " -f $port) -NoNewline; wh "listening" Green -nl:$false; wh "   $name" DarkGray
             } else {
@@ -286,13 +286,13 @@ function Closed-Ports {
     $seen = @{}; $count = 0
     netstat -ano | Select-String "LISTENING" | ForEach-Object {
         $parts = ($_ -split '\s+') | Where-Object { $_ -ne '' }
-        $addr = $parts[1]; $pid = $parts[-1]
+        $addr = $parts[1]; $procPid = $parts[-1]
         $port = ($addr -split ':')[-1]
         if ($seen[$port]) { return }
         $seen[$port] = $true
         if ($openPorts -notcontains $port) {
             $count++
-            try { $name = (Get-Process -Id $pid -ErrorAction Stop).Name } catch { $name = "unknown" }
+            try { $name = (Get-Process -Id $procPid -ErrorAction Stop).Name } catch { $name = "unknown" }
             wh "  " -nl:$false; wh "◆" Yellow -nl:$false
             Write-Host ("  {0,-8}  " -f $port) -NoNewline; wh "local only   $name" DarkGray
         }
@@ -312,20 +312,20 @@ function Kill-Port($p) {
     Write-Host ""
     Write-Host "  Port " -NoNewline; wh $p White -nl:$false; Write-Host " is in use:"
     Write-Host ""
-    foreach ($pid in $pids) {
+    foreach ($procPid in $pids) {
         try {
-            $proc = Get-Process -Id $pid -ErrorAction Stop
+            $proc = Get-Process -Id $procPid -ErrorAction Stop
             wh "  PID:  " White -nl:$false; Write-Host " $($proc.Id)"
             wh "  Name: " White -nl:$false; Write-Host " $($proc.Name)"
             Write-Host ""
         } catch {
-            wh "  PID:  " White -nl:$false; wh " $pid  (info unavailable)" DarkGray; Write-Host ""
+            wh "  PID:  " White -nl:$false; wh " $procPid  (info unavailable)" DarkGray; Write-Host ""
         }
     }
     $failed = $false
-    foreach ($pid in $pids) {
-        try { Stop-Process -Id $pid -Force -ErrorAction Stop }
-        catch { wh "Could not kill PID $pid - try running as Administrator." Yellow; $failed = $true }
+    foreach ($procPid in $pids) {
+        try { Stop-Process -Id $procPid -Force -ErrorAction Stop }
+        catch { wh "Could not kill PID $procPid - try running as Administrator." Yellow; $failed = $true }
     }
     if (-not $failed) { wh "Killed." Green }
 }
