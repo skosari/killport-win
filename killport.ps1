@@ -352,20 +352,86 @@ function Show-AttackConfig {
     wh "  killport attack  -  AI Pentest Configuration" Cyan
     Write-Rule
     Write-Host ""
-    wh "  Ollama host:  " White -nl:$false; wh $conf.ollama_host DarkGray
-    wh "  Model:        " White -nl:$false; wh $conf.model DarkGray
-    wh "  Enabled:      " White -nl:$false
+    wh "  Current settings:" DarkGray
+    Write-Host ""
+    wh "    Ollama host:  " White -nl:$false; wh $conf.ollama_host DarkGray
+    wh "    Model:        " White -nl:$false; wh $conf.model DarkGray
+    wh "    Enabled:      " White -nl:$false
     if ($conf.enabled -eq "true") { wh "yes" Green } else { wh "no" Yellow }
     Write-Host ""
-    Write-Host "  Change Ollama host? [$($conf.ollama_host)] -> " -NoNewline
-    $h = Read-Host; if ($h) { $conf.ollama_host = $h }
-    Write-Host "  Change model? [$($conf.model)] -> " -NoNewline
-    $m = Read-Host; if ($m) { $conf.model = $m }
-    Write-Host "  Enable attack mode? [y/N] -> " -NoNewline
+    wh "  Press Enter to keep the current value." DarkGray
+    Write-Host ""
+
+    # Ollama host
+    wh "  Ollama host" White -nl:$false; wh " (where Ollama is running)" DarkGray
+    Write-Host "  [$($conf.ollama_host)]: " -NoNewline
+    $h = Read-Host
+    if ($h) {
+        if ($h -notmatch '^https?://') { $h = "http://$h" }
+        $conf.ollama_host = $h
+    }
+
+    # Show installed models if Ollama is reachable
+    Write-Host ""
+    wh "  Fetching installed models from Ollama..." DarkGray
+    $installedModels = @()
+    try {
+        $resp = Invoke-WebRequest -Uri "$($conf.ollama_host)/api/tags" -UseBasicParsing -TimeoutSec 5 -ErrorAction Stop
+        $tags = ($resp.Content | ConvertFrom-Json).models
+        if ($tags) {
+            $installedModels = $tags | ForEach-Object { $_.name }
+            Write-Host ""
+            wh "  Installed models:" White
+            $i = 1
+            foreach ($mdl in $installedModels) {
+                $marker = if ($mdl -eq $conf.model -or $mdl.Split(":")[0] -eq $conf.model) { " <-- current" } else { "" }
+                wh "    $i. $mdl" -nl:$false
+                if ($marker) { wh $marker DarkGray } else { Write-Host "" }
+                $i++
+            }
+            Write-Host ""
+        } else {
+            wh "  No models found. Pull one with: ollama pull llama3.2" DarkGray
+            Write-Host ""
+        }
+    } catch {
+        wh "  Could not reach Ollama at $($conf.ollama_host)" Yellow
+        wh "  Make sure Ollama is running, then re-run: killport attack config" DarkGray
+        Write-Host ""
+    }
+
+    # Model name
+    wh "  Model name" White -nl:$false; wh " (type a name or number from the list above)" DarkGray
+    Write-Host "  [$($conf.model)]: " -NoNewline
+    $m = Read-Host
+    if ($m) {
+        # if user typed a number, resolve it to the model name
+        $idx = 0
+        if ([int]::TryParse($m, [ref]$idx) -and $idx -ge 1 -and $idx -le $installedModels.Count) {
+            $conf.model = $installedModels[$idx - 1]
+        } else {
+            $conf.model = $m
+        }
+    }
+
+    # Enable
+    Write-Host ""
+    $currentLabel = if ($conf.enabled -eq "true") { "currently ON" } else { "currently OFF" }
+    wh "  Enable attack mode?" White -nl:$false; wh " ($currentLabel)" DarkGray
+    Write-Host "  [y/n]: " -NoNewline
     $e = Read-Host
-    if ($e -match '^[Yy]') { $conf.enabled = "true" } else { $conf.enabled = "false" }
+    if     ($e -match '^[Yy]') { $conf.enabled = "true"  }
+    elseif ($e -match '^[Nn]') { $conf.enabled = "false" }
+    # blank = no change
+
     Save-AttackConf $conf
-    Write-Host ""; wh "  Config saved." Green; Write-Host ""
+    Write-Host ""
+    wh "  Config saved:" DarkGray
+    wh "    Host:     " DarkGray -nl:$false; wh $conf.ollama_host White
+    wh "    Model:    " DarkGray -nl:$false; wh $conf.model White
+    wh "    Enabled:  " DarkGray -nl:$false
+    if ($conf.enabled -eq "true") { wh "yes" Green } else { wh "no" Yellow }
+    Write-Host ""
 }
 
 function Show-AttackLog {
