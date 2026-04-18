@@ -4,7 +4,7 @@ param(
     [Parameter(Mandatory=$false, Position=2)] [string]$Extra
 )
 
-$VERSION = "1.7.0"
+$VERSION = "1.7.2"
 $REPO    = "skosari/killport-win"
 $RAW     = "https://raw.githubusercontent.com/$REPO/main"
 
@@ -590,7 +590,10 @@ def ollama_chat(messages):
     try:
         with urllib.request.urlopen(req, timeout=120) as r:
             content = json.loads(r.read())["message"]["content"]
-            return re.sub(r'<think>.*?</think>','',content,flags=re.DOTALL).strip()
+            content = re.sub(r'<think>.*?</think>','',content,flags=re.DOTALL)
+            content = re.sub(r'^.*?</think>\s*','',content,flags=re.DOTALL)
+            content = re.sub(r'<think>.*$','',content,flags=re.DOTALL)
+            return content.strip()
     except Exception as e:
         return f"ERROR: {e}"
 
