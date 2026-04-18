@@ -4,7 +4,7 @@ param(
     [Parameter(Mandatory=$false, Position=2)] [string]$Extra
 )
 
-$VERSION = "1.10.11"
+$VERSION = "1.10.12"
 $REPO    = "skosari/killport-win"
 $RAW     = "https://raw.githubusercontent.com/$REPO/main"
 
