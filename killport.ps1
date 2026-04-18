@@ -4,7 +4,7 @@ param(
     [Parameter(Mandatory=$false, Position=2)] [string]$Extra
 )
 
-$VERSION = "1.7.2"
+$VERSION = "1.8.0"
 $REPO    = "skosari/killport-win"
 $RAW     = "https://raw.githubusercontent.com/$REPO/main"
 
@@ -566,102 +566,332 @@ function Start-AttackRun($target, [bool]$fullScan = $false) {
     Write-Host ""
 
     $pyScript = @'
-import sys, json, subprocess, re, datetime, urllib.request
+import sys, json, subprocess, re, datetime, os, tempfile, urllib.request
+from collections import defaultdict
 
 target   = sys.argv[1]
 host     = sys.argv[2]
 model    = sys.argv[3]
 log_path = sys.argv[4]
-nmap_out = sys.stdin.read()
+INITIAL  = sys.stdin.read()
+DEPTH    = os.environ.get("KP_DEPTH","common")
 
-MAX_ITERS = 12
-TOOLS = {
-    "nmap_scan":   "nmap -sV --open -p {ports} {target}",
-    "http_probe":  "curl -sk --max-time 5 http://{target}:{port}/",
-    "https_probe": "curl -sk --max-time 5 https://{target}:{port}/",
-    "banner_grab": "nmap -sV -p {port} {target}",
-    "run_script":  "nmap --script={script} -p {port} {target}",
+MAX_IT = 20
+B="\033[1m"; C="\033[0;36m"; D="\033[2m"; R="\033[0m"
+
+findings = defaultdict(lambda:{
+    "service":"","version":"","banner":"","no_auth":False,
+    "creds_ok":[],"hashes":[],"cracked":[],"paths_found":[],"notes":[]
+})
+
+_USERS={"quick":["admin","root"],"common":["admin","root","user","test","administrator"],
+        "deep":["admin","root","user","test","administrator","guest","service","backup","operator"]}
+_PASSES={"quick":["","admin","password","123456"],
+         "common":["","admin","password","123456","root","pass","test","guest","1234","letmein"],
+         "deep":["","admin","password","123456","root","pass","test","guest","1234","letmein",
+                 "welcome","master","qwerty","abc123","changeme","secret","P@ssw0rd","Admin1"]}
+TOP_USERS  = _USERS.get(DEPTH, _USERS["common"])
+TOP_PASSES = _PASSES.get(DEPTH, _PASSES["common"])
+
+RISK_RULES = {
+    "critical": lambda d: d["no_auth"] or bool(d["creds_ok"]),
+    "high":     lambda d: any(s in (d["service"] or "").lower() for s in
+                              ["telnet","ftp","redis","mongodb","vnc"]) or bool(d["cracked"]),
+    "medium":   lambda d: any(s in (d["service"] or "").lower() for s in
+                              ["ssh","http","mysql","postgres","smtp","smb"]),
+    "low":      lambda d: True,
 }
+RISK_ICON = {"critical":"[CRITICAL]","high":"[HIGH]","medium":"[MEDIUM]","low":"[LOW]"}
+
+def risk_level(d):
+    for level, check in RISK_RULES.items():
+        if check(d): return level
+    return "low"
+
+def ensure_port(p):
+    _ = findings[p]
+
+SENSITIVE_PATHS=["/admin","/login","/wp-admin","/wp-login.php","/phpmyadmin","/.env",
+                 "/backup","/api/v1","/console","/actuator/env","/.git/HEAD","/server-status"]
+
+def sh(cmd, inp=None, timeout=30):
+    try:
+        r=subprocess.run(cmd,input=inp,capture_output=True,text=True,timeout=timeout,shell=True)
+        return (r.stdout+r.stderr)[:2500]
+    except subprocess.TimeoutExpired: return "(timed out)"
+    except Exception as e: return f"(error: {e})"
+
+def has(tool):
+    r=subprocess.run(f"where {tool}",capture_output=True,text=True,shell=True)
+    return r.returncode==0
 
 def ollama_chat(messages):
-    body = json.dumps({"model":model,"messages":messages,"stream":False}).encode()
-    req  = urllib.request.Request(f"{host}/api/chat", data=body,
-                                   headers={"Content-Type":"application/json"})
+    body=json.dumps({"model":model,"messages":messages,"stream":False}).encode()
+    req=urllib.request.Request(f"{host}/api/chat",data=body,
+                               headers={"Content-Type":"application/json"})
     try:
-        with urllib.request.urlopen(req, timeout=120) as r:
-            content = json.loads(r.read())["message"]["content"]
-            content = re.sub(r'<think>.*?</think>','',content,flags=re.DOTALL)
-            content = re.sub(r'^.*?</think>\s*','',content,flags=re.DOTALL)
-            content = re.sub(r'<think>.*$','',content,flags=re.DOTALL)
+        with urllib.request.urlopen(req,timeout=120) as r:
+            content=json.loads(r.read())["message"]["content"]
+            content=re.sub(r'<think>.*?</think>','',content,flags=re.DOTALL)
+            content=re.sub(r'^.*?</think>\s*','',content,flags=re.DOTALL)
+            content=re.sub(r'<think>.*$','',content,flags=re.DOTALL)
             return content.strip()
     except Exception as e:
-        return f"ERROR: {e}"
+        return f""
 
-def run_tool(name, params):
-    tpl = TOOLS.get(name)
-    if not tpl: return f"Unknown tool: {name}"
-    try:
-        cmd = tpl.format(target=target, **params)
-        r   = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=60)
-        return (r.stdout + r.stderr).strip() or "(no output)"
-    except Exception as e:
-        return f"Error: {e}"
+def tool_scan(port):
+    ensure_port(port)
+    if has("nmap"):
+        out=sh(f"nmap -sV -sC -p {port} --open -T4 {target}",timeout=45)
+        findings[port]["notes"].append(out[:200])
+        for line in out.splitlines():
+            if f"{port}/tcp" in line:
+                parts=line.split()
+                if len(parts)>=4:
+                    findings[port]["service"]=parts[2]
+                    findings[port]["version"]=" ".join(parts[3:])
+        return out
+    return f"nmap not found"
 
-def log(text):
-    ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    with open(log_path, "a", encoding="utf-8") as f:
-        f.write(f"[{ts}] {text}\n")
+def tool_banner(port):
+    ensure_port(port)
+    out=sh(f"nmap -p {port} --script=banner {target}",timeout=15)
+    b=out[:600] or "(no banner)"
+    findings[port]["banner"]=b
+    for m in re.findall(r'\$[126]\$\S+|[a-f0-9]{32,64}',b):
+        if m not in findings[port]["hashes"]: findings[port]["hashes"].append(m)
+    return b
 
-SYSTEM = f"""You are an expert penetration tester investigating: {target}
-Use a ReAct loop: Thought -> Action -> Observation -> repeat -> Final Answer.
+def tool_http_probe(port, path="/"):
+    ensure_port(port)
+    scheme="https" if port in ("443","8443") else "http"
+    out=sh(f'curl -sk --max-time 6 -i -L --max-redirs 2 {scheme}://{target}:{port}{path}')
+    for m in re.findall(r'\$[126]\$\S+|[a-f0-9]{32,64}',out):
+        if m not in findings[port]["hashes"]: findings[port]["hashes"].append(m)
+    return out[:1500]
 
-Available tools (JSON):
-{json.dumps(TOOLS, indent=2)}
+def tool_http_paths(port):
+    ensure_port(port)
+    scheme="https" if port in ("443","8443") else "http"
+    found=[]
+    for path in SENSITIVE_PATHS:
+        out=sh(f'curl -sk --max-time 4 -o NUL -w "%{{http_code}}" {scheme}://{target}:{port}{path}')
+        code=out.strip()
+        if code not in ("404","000","","400"): found.append(f"{code}  {path}")
+    findings[port]["paths_found"].extend(found)
+    return "\n".join(found) if found else "no sensitive paths found"
 
-Format each action as:
-Action: {{"tool": "tool_name", "params": {{...}}}}
+def tool_try(service, port, user, passwd):
+    ensure_port(port)
+    s=service.lower(); res="failed"
+    if s in ("http","https","web"):
+        scheme="https" if port in ("443","8443") else "http"
+        out=sh(f'curl -sk --max-time 4 -o NUL -w "%{{http_code}}" -u {user}:{passwd} {scheme}://{target}:{port}/')
+        code=out.strip()
+        res=f"HTTP {code} SUCCESS" if code in ("200","302","301","303") else "failed"
+    elif s=="ftp":
+        out=sh(f"curl -s --max-time 5 ftp://{user}:{passwd}@{target}/")
+        res="LOGIN SUCCEEDED" if "530" not in out and out else "failed"
+    elif s=="redis":
+        out=sh(f'echo AUTH {passwd}\r\nPING\r\nQUIT | ncat {target} {port}',timeout=5)
+        if "+OK" in out and "+PONG" in out:
+            res=f"password '{passwd}' ACCEPTED"
+        else:
+            out2=sh(f'echo PING\r\nQUIT | ncat {target} {port}',timeout=5)
+            if "+PONG" in out2:
+                findings[port]["no_auth"]=True; res="NO AUTH REQUIRED"
+    if "SUCCEEDED" in res or "ACCEPTED" in res or "SUCCESS" in res:
+        cred=f"{user}:{passwd}"
+        if cred not in findings[port]["creds_ok"]: findings[port]["creds_ok"].append(cred)
+    return res
 
-When done:
-Final Answer: <full markdown pentest report>"""
+def tool_wordlist(service, port):
+    ensure_port(port)
+    hits=[]
+    if service.lower()=="redis":
+        out=sh(f'echo PING\r\nQUIT | ncat {target} {port}',timeout=5)
+        if "+PONG" in out:
+            findings[port]["no_auth"]=True
+            return "CRITICAL: Redis has NO password"
+    total=len(TOP_USERS)*len(TOP_PASSES); done=0; bar_w=30
+    for user in TOP_USERS:
+        for pw in TOP_PASSES:
+            done+=1
+            pct=done*100//total; filled=done*bar_w//total
+            bar="\u2588"*filled+"\u2591"*(bar_w-filled)
+            sys.stdout.write(f"  \033[2m[{bar}] {pct:3d}%  testing {service}/{user}\033[0m\r")
+            sys.stdout.flush()
+            res=tool_try(service,port,user,pw)
+            if "SUCCEEDED" in res or "ACCEPTED" in res or "NO AUTH" in res:
+                hits.append(f"  \u2713 {user}:{pw or '(empty)'}  \u2192  {res}")
+                if len(hits)>=3: break
+        if len(hits)>=3: break
+    sys.stdout.write("  "+" "*60+"\r"); sys.stdout.flush()
+    return "\n".join(hits) if hits else "no credentials from wordlist succeeded"
 
-messages = [
+def tool_nmap_script(port, script):
+    if not has("nmap"): return "nmap not installed"
+    out=sh(f"nmap -p {port} --script={script} -T4 {target}",timeout=60)
+    ensure_port(port)
+    findings[port]["notes"].append(f"nmap {script}: {out[:200]}")
+    return out
+
+def tool_crack(h):
+    h=h.strip()
+    hf=tempfile.NamedTemporaryFile(mode='w',suffix='.hash',delete=False)
+    hf.write(h+"\n"); hf.close()
+    ht=""; flag=""
+    if re.match(r'^[a-f0-9]{32}$',h,re.I):   ht="MD5";    flag="--hash-type=0"
+    elif re.match(r'^[a-f0-9]{40}$',h,re.I): ht="SHA1";   flag="--hash-type=100"
+    elif re.match(r'^[a-f0-9]{64}$',h,re.I): ht="SHA256"; flag="--hash-type=1400"
+    elif re.match(r'^\$6\$',h):               ht="SHA512"; flag="--hash-type=1800"
+    wl="C:\\rockyou.txt"
+    out=""
+    if has("hashcat") and flag and os.path.exists(wl):
+        r=subprocess.run(f'hashcat {flag} {hf.name} {wl} --quiet --potfile-disable --outfile-format=2 --runtime=20',
+            shell=True,capture_output=True,text=True,timeout=25)
+        if r.returncode==0 and r.stdout.strip():
+            out=f"CRACKED: {r.stdout.strip().splitlines()[-1]}"
+    os.unlink(hf.name)
+    result=out or f"could not crack — type: {ht or 'unknown'}"
+    for p,d in findings.items():
+        if h in d["hashes"] and out: d["cracked"].append(f"{h[:20]}... -> {out}")
+    return result
+
+def ai_report(case_file):
+    now=datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+    header=["="*62,
+            f"  SECURITY REPORT  .  {target}  .  {now}",
+            f"  Model: {model}",
+            "="*62,""]
+    port_lines=[]
+    for port,data in sorted(findings.items(),key=lambda x:int(x[0]) if x[0].isdigit() else 0):
+        rl=risk_level(data); svc=data["service"] or "unknown"
+        ver=f" ({data['version']})" if data["version"] else ""
+        issues=[]
+        if data["no_auth"]: issues.append("NO PASSWORD")
+        for c in data["creds_ok"]: issues.append(f"weak credential: {c}")
+        for c in data["cracked"]: issues.append(f"hash cracked: {c}")
+        if data["paths_found"]: issues.append(f"exposed paths: {', '.join(data['paths_found'][:3])}")
+        status="; ".join(issues) if issues else "open"
+        port_lines.append(f"  Port {port} - {svc.upper()}{ver}  {RISK_ICON[rl]}  {status}")
+    case_text="\n\n".join(case_file) if case_file else "Initial scan only."
+    report_msgs=[
+        {"role":"system","content":(
+            "You are a security analyst writing a penetration test report. "
+            "Write in clear plain English that a non-technical person can understand. "
+            "Do not use markdown # headers. Use plain section labels in ALL CAPS."
+        )},
+        {"role":"user","content":(
+            f"Target: {target}\n\n"
+            "Port overview:\n"+"\n".join(port_lines)+"\n\n"
+            f"Full investigation log:\n{case_text[:5000]}\n\n"
+            "Write a complete security report with exactly these four sections:\n"
+            "EXECUTIVE SUMMARY\n"
+            "FINDINGS (cover each port: service name, risk level, plain-English explanation)\n"
+            "WHAT TO DO FIRST (numbered list, most critical action first)\n"
+            "ADDITIONAL HARDENING (3-5 general recommendations)"
+        )}
+    ]
+    body=ollama_chat(report_msgs)
+    return "\n".join(header)+body+"\n"
+
+# ── Agent (ReAct loop) ────────────────────────────────────
+SYSTEM="""You are an autonomous security agent performing an authorized penetration test.
+
+Each response MUST follow this exact two-line format:
+Thought: <your reasoning about findings so far and what to do next>
+Action: TOOL_NAME arg1 arg2
+
+Available actions:
+  SCAN_PORT <port>                 detailed version + script scan
+  BANNER_GRAB <port>               grab raw service banner
+  HTTP_PROBE <port> <path>         fetch a specific URL path
+  HTTP_PATHS <port>                check common sensitive paths
+  TRY_CREDS <svc> <port> <u> <p>  test a single credential
+  WORDLIST <svc> <port>            brute-force common credentials
+  NMAP_SCRIPT <port> <script>      run an nmap NSE script
+  CRACK_HASH <hash>                crack a password hash
+  REPORT                           write the final report (call when done)
+
+Guidelines:
+- SCAN_PORT and BANNER_GRAB each discovered port to identify services and versions
+- WORDLIST any authentication service: ftp, redis, mysql, postgres, http
+- HTTP_PATHS any web port (http or https)
+- Follow leads: if a banner or response contains a hash, CRACK_HASH it
+- When all services are thoroughly investigated, call Action: REPORT
+"""
+
+case_file=[]
+msgs=[
     {"role":"system","content":SYSTEM},
-    {"role":"user",  "content":f"Initial nmap scan:\n\n{nmap_out}\n\nBegin your investigation."}
+    {"role":"user","content":(
+        f"Target: {target}\n\nInitial port scan:\n{INITIAL}\n\n"
+        "Investigate all discovered services thoroughly, then call Action: REPORT."
+    )}
 ]
 
-log(f"=== Attack started: {target} ===  model={model}")
+print(f"\n  {B}{C}Agent starting{R}  {D}target: {target}  model: {model}{R}\n",flush=True)
 
-for _ in range(MAX_ITERS):
-    reply = ollama_chat(messages)
-    if not reply: print("  [AI] No response from Ollama."); break
-    print(f"\n  [AI] {reply}\n"); log(f"AI: {reply}")
-
-    if "Final Answer:" in reply:
-        report = reply.split("Final Answer:",1)[1].strip()
-        log(f"REPORT:\n{report}")
-        print("\n" + "="*60 + "\n  PENTEST REPORT\n" + "="*60)
-        print(report)
-        print("="*60 + "\n")
-        break
-
-    m = re.search(r'Action:\s*(\{.*?\})', reply, re.DOTALL)
+for line in INITIAL.splitlines():
+    m=re.match(r'(\d+)/tcp\s+\S+\s+(\S*)\s*(.*)',line)
     if m:
-        try:
-            act  = json.loads(m.group(1))
-            name = act.get("tool",""); params = act.get("params",{})
-            print(f"  [TOOL] {name}({params})"); log(f"TOOL: {name}({params})")
-            obs  = run_tool(name, params)
-            print(f"  [OBS]  {obs[:500]}"); log(f"OBS: {obs[:500]}")
-            messages += [{"role":"assistant","content":reply},
-                         {"role":"user","content":f"Observation: {obs}"}]
-        except json.JSONDecodeError:
-            messages += [{"role":"assistant","content":reply},
-                         {"role":"user","content":"Continue your investigation."}]
-    else:
-        messages += [{"role":"assistant","content":reply},
-                     {"role":"user","content":"Continue your investigation."}]
+        p,svc,ver=m.group(1),m.group(2),m.group(3).strip()
+        ensure_port(p)
+        if svc: findings[p]["service"]=svc
+        if ver: findings[p]["version"]=ver
 
-log(f"=== Attack ended: {target} ===")
+itr=0
+while itr < MAX_IT:
+    itr+=1
+    sys.stdout.write(f"  {D}[{itr}/{MAX_IT}] reasoning...{R}   \r"); sys.stdout.flush()
+    reply=ollama_chat(msgs)
+    sys.stdout.write("  "+" "*50+"\r"); sys.stdout.flush()
+    if not reply: break
+
+    thought_m=re.search(r'Thought:\s*(.+?)(?=\nAction:|\Z)',reply,re.DOTALL|re.IGNORECASE)
+    if thought_m:
+        for tl in thought_m.group(1).strip().splitlines():
+            tl=tl.strip()
+            if tl: print(f"  {D}💭 {tl}{R}",flush=True)
+
+    action_m=(re.search(r'Action:\s*(\S[^\n]*)',reply,re.IGNORECASE) or
+              re.search(r'TOOL:\s*(\S[^\n]*)',reply))
+    if not action_m: break
+
+    tool_call=action_m.group(1).strip()
+    tool_name=tool_call.split()[0].upper()
+    args=tool_call.split()[1:]
+
+    print(f"  {C}\u25b6{R}  {B}{tool_call}{R}",flush=True)
+
+    if tool_name=="REPORT": break
+
+    result="unknown tool"
+    try:
+        if   tool_name=="SCAN_PORT"   and args: result=tool_scan(args[0])
+        elif tool_name=="BANNER_GRAB" and args: result=tool_banner(args[0])
+        elif tool_name=="HTTP_PROBE"  and args: result=tool_http_probe(args[0],args[1] if len(args)>1 else "/")
+        elif tool_name=="HTTP_PATHS"  and args: result=tool_http_paths(args[0])
+        elif tool_name=="TRY_CREDS"   and len(args)>=4: result=tool_try(args[0],args[1],args[2],args[3])
+        elif tool_name=="WORDLIST"    and len(args)>=2: result=tool_wordlist(args[0],args[1])
+        elif tool_name=="NMAP_SCRIPT" and len(args)>=2: result=tool_nmap_script(args[0],args[1])
+        elif tool_name=="CRACK_HASH"  and args: result=tool_crack(args[0])
+    except Exception as e:
+        result=f"tool error: {e}"
+
+    short=result[:120]+("..." if len(result)>120 else "")
+    print(f"  {D}{short}{R}",flush=True)
+
+    case_file.append(f"[{tool_call}]\n{result[:1500]}")
+    msgs.append({"role":"assistant","content":reply})
+    msgs.append({"role":"user","content":f"Result:\n{result[:2000]}"})
+
+print(f"\n  {B}{C}Writing report...{R}\n",flush=True)
+report=ai_report(case_file)
+print(report)
+with open(log_path,"a",encoding="utf-8") as f:
+    f.write(report)
 '@
 
     $pyFile = "$env:TEMP\kp_attack_$(Get-Random).py"
