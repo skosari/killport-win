@@ -4,7 +4,7 @@ param(
     [Parameter(Mandatory=$false, Position=2)] [string]$Extra
 )
 
-$VERSION = "1.10.1"
+$VERSION = "1.10.2"
 $REPO    = "skosari/killport-win"
 $RAW     = "https://raw.githubusercontent.com/$REPO/main"
 
@@ -190,7 +190,55 @@ function Status-Port($p) {
 
 # ── openports ────────────────────────────────────────────────────────────────
 
-function Open-Ports {
+function Invoke-OpenCheck($target) {
+    $PORTS = @(21,22,23,25,53,80,110,143,443,465,587,993,995,
+               3000,3001,3306,4000,4200,5000,5173,5432,
+               6379,8000,8080,8443,8888,9000,9090,9200,27017)
+    Write-Host ""
+    wh "  External Port Check" Cyan -nl:$false; wh "  -> $target" DarkGray
+    Write-Rule; Write-Host ""
+    $nmap = (Get-Command nmap -ErrorAction SilentlyContinue)?.Source
+    if ($nmap) {
+        wh "  Scanning with nmap..." DarkGray; Write-Host ""
+        $portCsv = $PORTS -join ","
+        $found = 0
+        & $nmap -p $portCsv --open -T4 $target 2>$null | Where-Object { $_ -match '^\d+/tcp' } | ForEach-Object {
+            $parts = $_ -split '\s+'; $port = $parts[0] -replace '/tcp'
+            $svc = if ($parts.Count -ge 3) { $parts[2] } else { "" }
+            wh "  ● " Green -nl:$false; wh ("{0,-8}  " -f $port) -nl:$false; wh "open   $svc" DarkGray
+            $found++
+        }
+        if ($found -eq 0) { wh "  No open ports found on scanned list." DarkGray }
+        Write-Host ""; Write-Rule
+        wh "  $found open port(s) found  ·  scanned $($PORTS.Count) common ports via nmap" DarkGray
+    } else {
+        wh "  nmap not found — probing $($PORTS.Count) common ports with .NET (parallel)..." DarkGray; Write-Host ""
+        $results = [System.Collections.Concurrent.ConcurrentBag[int]]::new()
+        $jobs = $PORTS | ForEach-Object {
+            $p = $_
+            [System.Threading.Tasks.Task]::Run({
+                try {
+                    $tcp = New-Object System.Net.Sockets.TcpClient
+                    $ar = $tcp.BeginConnect($target, $p, $null, $null)
+                    if ($ar.AsyncWaitHandle.WaitOne(1000)) { $tcp.EndConnect($ar); $results.Add($p) }
+                    $tcp.Dispose()
+                } catch {}
+            }.GetNewClosure())
+        }
+        [System.Threading.Tasks.Task]::WaitAll($jobs)
+        $sorted = $results | Sort-Object
+        if ($sorted) {
+            foreach ($p in $sorted) { wh "  ● " Green -nl:$false; wh ("{0,-8}  open" -f $p) DarkGray }
+        } else { wh "  No open ports found on scanned list." DarkGray }
+        Write-Host ""; Write-Rule
+        wh "  $($sorted.Count) open port(s) found  ·  scanned $($PORTS.Count) common ports" DarkGray
+        wh "  Install nmap for broader coverage: https://nmap.org" DarkGray
+    }
+    Write-Host ""
+}
+
+function Open-Ports($target) {
+    if ($target) { Invoke-OpenCheck $target; return }
     Write-Host ""
     wh "  Firewall-Open Ports" Cyan -nl:$false; wh "  (external access via killport)" DarkGray
     Write-Rule
@@ -1424,6 +1472,7 @@ if (-not $Command) {
     Write-Host "  killport open <port>       open a port to external connections"
     Write-Host "  killport close <port>      close a port from external connections"
     Write-Host "  killport openports         show all ports open to external access"
+    Write-Host "  killport openports <ip>    probe an IP from this machine to check open ports"
     Write-Host "  killport closedports       show all listening ports with no external access"
     Write-Host "  killport status <port>     show if a port is open or closed"
     Write-Host "  killport ip                show IP addresses and network info"
@@ -1453,7 +1502,7 @@ switch ($Command.ToLower()) {
     "update"      { Update-Killport }
     "uninstall"   { Uninstall-Killport }
     "list"        { List-Ports }
-    "openports"   { Open-Ports }
+    "openports"   { Open-Ports $Port }
     "closedports" { Closed-Ports }
     "ip"          { Show-IP }
     "attack"      { Invoke-AttackDispatch $Port $Extra }
