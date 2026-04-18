@@ -4,7 +4,7 @@ param(
     [Parameter(Mandatory=$false, Position=2)] [string]$Extra
 )
 
-$VERSION = "1.10.5"
+$VERSION = "1.10.6"
 $REPO    = "skosari/killport-win"
 $RAW     = "https://raw.githubusercontent.com/$REPO/main"
 
@@ -218,7 +218,7 @@ function Invoke-OpenCheck($target) {
         $results = [System.Collections.Concurrent.ConcurrentBag[int]]::new()
         $jobs = $PORTS | ForEach-Object {
             $p = $_
-            [System.Threading.Tasks.Task]::Run({
+            [System.Threading.Tasks.Task]::Run([System.Action]{
                 try {
                     $tcp = New-Object System.Net.Sockets.TcpClient
                     $ar = $tcp.BeginConnect($target, $p, $null, $null)
@@ -1769,8 +1769,8 @@ function Forward-Port($localPort, $target) {
                 $client = $listener.AcceptTcpClient()
                 $remote = [System.Net.Sockets.TcpClient]::new($tHost, [int]$tPort)
                 $cs = $client.GetStream(); $rs = $remote.GetStream()
-                $t1 = [System.Threading.Tasks.Task]::Run({ try { $cs.CopyTo($rs) } catch {} })
-                $t2 = [System.Threading.Tasks.Task]::Run({ try { $rs.CopyTo($cs) } catch {} })
+                $t1 = [System.Threading.Tasks.Task]::Run([System.Action]{ try { $cs.CopyTo($rs) } catch {} })
+                $t2 = [System.Threading.Tasks.Task]::Run([System.Action]{ try { $rs.CopyTo($cs) } catch {} })
                 [System.Threading.Tasks.Task]::WhenAny($t1,$t2) | Out-Null
                 $client.Dispose(); $remote.Dispose()
             }
