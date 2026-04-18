@@ -4,7 +4,7 @@ param(
     [Parameter(Mandatory=$false, Position=2)] [string]$Extra
 )
 
-$VERSION = "1.10.8"
+$VERSION = "1.10.9"
 $REPO    = "skosari/killport-win"
 $RAW     = "https://raw.githubusercontent.com/$REPO/main"
 
@@ -971,8 +971,8 @@ function Invoke-AttackDispatch($sub, $arg) {
             wh "  killport attack" Cyan
             Write-Rule
             Write-Host ""
-            Write-Host "  killport attack <ip>              AI pentest (common ports)"
-            Write-Host "  killport attack allports <ip>     AI pentest (all 65535 ports)"
+            Write-Host "  killport attack <ip>              AI pentest (common ports)  (requires Ollama)"
+            Write-Host "  killport attack allports <ip>     AI pentest (all 65535 ports)  (requires Ollama)"
             Write-Host "  killport config            configure Ollama host and model"
             Write-Host "  killport attack log               view last attack log"
             Write-Host ""
@@ -1615,7 +1615,7 @@ function Invoke-FixDispatch($sub) {
         Write-Host ""
         wh "  killport fix" Cyan -nl; wh "  detect and fix service vulnerabilities" DarkGray; Write-Host ""
         Write-Rule; Write-Host ""
-        Write-Host "  killport fix <ip:port>     detect vulnerabilities and generate/apply a fix"
+        Write-Host "  killport fix <ip:port>     detect vulnerabilities and generate/apply a fix  (requires Ollama)"
         Write-Host ""
         wh "  Examples:" DarkGray
         wh "    killport fix 192.168.1.10:22     harden SSH" DarkGray
@@ -1803,7 +1803,7 @@ if (-not $Command) {
     Write-Host "  killport sniff <port>      capture and display traffic on a port"
     Write-Host "  killport sniff <ip:port>   capture traffic to/from a specific host:port"
     Write-Host "  killport vuln <ip:port>    detect service version + query CVE database"
-    Write-Host "  killport fix <ip:port>     detect vulns and generate/apply a fix"
+    Write-Host "  killport fix <ip:port>     detect vulns and generate/apply a fix  (requires Ollama)"
     Write-Host "  killport audit             review firewall rules with plain-English findings"
     Write-Host "  killport dns <domain>      DNS recon: A/MX/TXT/NS/AXFR zone transfer test"
     Write-Host "  killport forward <p> <h:p> forward a local port to a remote host:port"
@@ -1811,8 +1811,8 @@ if (-not $Command) {
     Write-Host "  killport update            update to the latest version"
     Write-Host "  killport uninstall         remove killport and all firewall rules"
     Write-Host ""
-    wh "  killport attack <ip>              AI pentest (common ports)" DarkGray
-    wh "  killport attack allports <ip>     AI pentest (all 65535 ports)" DarkGray
+    wh "  killport attack <ip>              AI pentest (common ports)  (requires Ollama)" DarkGray
+    wh "  killport attack allports <ip>     AI pentest (all 65535 ports)  (requires Ollama)" DarkGray
     wh "  killport config            configure Ollama host and model" DarkGray
     wh "  killport attack log               view last attack log" DarkGray
     Write-Host ""
