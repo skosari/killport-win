@@ -1,6 +1,7 @@
 param(
     [Parameter(Mandatory=$false, Position=0)] [string]$Command,
-    [Parameter(Mandatory=$false, Position=1)] [string]$Port
+    [Parameter(Mandatory=$false, Position=1)] [string]$Port,
+    [Parameter(Mandatory=$false, Position=2)] [string]$Extra
 )
 
 $VERSION = "1.6.7"
@@ -173,14 +174,14 @@ function Status-Port($p) {
     if (Get-NetFirewallRule -DisplayName "killport-$p" -ErrorAction SilentlyContinue) {
         wh "  Firewall:  " -nl:$false; wh "OPEN" Green -nl:$false; Write-Host "  (killport rule allows external access)"
     } else {
-        wh "  Firewall:  " -nl:$false; wh "CLOSED" DarkGray -nl:$false; Write-Host "  (no killport rule — external access blocked)"
+        wh "  Firewall:  " -nl:$false; wh "CLOSED" DarkGray -nl:$false; Write-Host "  (no killport rule - external access blocked)"
     }
     $conn = netstat -ano | Select-String ":$p\s" | Select-String /i "LISTENING"
     if ($conn) {
         $pid = (($conn | Select-Object -First 1) -split '\s+')[-1]
         try   { $name = (Get-Process -Id $pid -ErrorAction Stop).Name }
         catch { $name = "?" }
-        wh "  Listening: " -nl:$false; wh "YES" Green -nl:$false; Write-Host "  (PID: $pid — $name)"
+        wh "  Listening: " -nl:$false; wh "YES" Green -nl:$false; Write-Host "  (PID: $pid - $name)"
     } else {
         wh "  Listening: " -nl:$false; wh "NO" DarkGray -nl:$false; Write-Host "  (nothing is running on this port)"
     }
@@ -274,7 +275,7 @@ function Kill-Port($p) {
     $failed = $false
     foreach ($pid in $pids) {
         try { Stop-Process -Id $pid -Force -ErrorAction Stop }
-        catch { wh "Could not kill PID $pid — try running as Administrator." Yellow; $failed = $true }
+        catch { wh "Could not kill PID $pid - try running as Administrator." Yellow; $failed = $true }
     }
     if (-not $failed) { wh "Killed." Green }
 }
@@ -300,7 +301,7 @@ function Update-Killport {
     $ps1Path = $PSCommandPath
     if (-not $ps1Path) { $ps1Path = "C:\ProgramData\killport\killport.ps1" }
     $content = (Invoke-WebRequest -Uri "$RAW/killport.ps1" -UseBasicParsing).Content
-    [System.IO.File]::WriteAllText($ps1Path, $content, [System.Text.Encoding]::UTF8)
+    [System.IO.File]::WriteAllText($ps1Path, $content, (New-Object System.Text.UTF8Encoding $True))
 
     wh "Updated to v$remote. Run killport to confirm." Green
 }
@@ -326,6 +327,279 @@ function Uninstall-Killport {
     wh "killport uninstalled." Green
 }
 
+# ── attack ───────────────────────────────────────────────────────────────────
+
+$ATTACK_CONF = "$env:ProgramData\killport\attack.conf"
+$ATTACK_LOG  = "$env:ProgramData\killport\attack.log"
+
+function Get-AttackConf {
+    $conf = @{ ollama_host = "http://localhost:11434"; model = "llama3.2"; enabled = "false" }
+    if (Test-Path $ATTACK_CONF) {
+        Get-Content $ATTACK_CONF | ForEach-Object {
+            if ($_ -match '^([^=]+)=(.+)$') { $conf[$Matches[1].Trim()] = $Matches[2].Trim() }
+        }
+    }
+    return $conf
+}
+
+function Save-AttackConf($conf) {
+    $conf.Keys | ForEach-Object { "$_=$($conf[$_])" } | Set-Content $ATTACK_CONF
+}
+
+function Show-AttackConfig {
+    $conf = Get-AttackConf
+    Write-Host ""
+    wh "  killport attack  -  AI Pentest Configuration" Cyan
+    Write-Rule
+    Write-Host ""
+    wh "  Ollama host:  " White -nl:$false; wh $conf.ollama_host DarkGray
+    wh "  Model:        " White -nl:$false; wh $conf.model DarkGray
+    wh "  Enabled:      " White -nl:$false
+    if ($conf.enabled -eq "true") { wh "yes" Green } else { wh "no" Yellow }
+    Write-Host ""
+    Write-Host "  Change Ollama host? [$($conf.ollama_host)] -> " -NoNewline
+    $h = Read-Host; if ($h) { $conf.ollama_host = $h }
+    Write-Host "  Change model? [$($conf.model)] -> " -NoNewline
+    $m = Read-Host; if ($m) { $conf.model = $m }
+    Write-Host "  Enable attack mode? [y/N] -> " -NoNewline
+    $e = Read-Host
+    if ($e -match '^[Yy]') { $conf.enabled = "true" } else { $conf.enabled = "false" }
+    Save-AttackConf $conf
+    Write-Host ""; wh "  Config saved." Green; Write-Host ""
+}
+
+function Show-AttackLog {
+    if (-not (Test-Path $ATTACK_LOG)) { wh "  No attack log found." DarkGray; Write-Host ""; return }
+    Get-Content $ATTACK_LOG | ForEach-Object { Write-Host $_ }
+}
+
+function Request-ToolInstall($tool, $desc) {
+    Write-Host ""
+    wh "  $tool not installed" Yellow
+    Write-Host "  $desc"
+    $mgr = $null
+    if     (Get-Command choco  -ErrorAction SilentlyContinue) { $mgr = "choco"  }
+    elseif (Get-Command winget -ErrorAction SilentlyContinue) { $mgr = "winget" }
+    elseif (Get-Command scoop  -ErrorAction SilentlyContinue) { $mgr = "scoop"  }
+    if ($mgr) {
+        Write-Host "  Install with $mgr now? [Y/n] -> " -NoNewline
+        $a = Read-Host
+        if (-not $a -or $a -match '^[Yy]') {
+            switch ($mgr) {
+                "choco"  { & choco install $tool -y }
+                "winget" { & winget install --id $tool }
+                "scoop"  { & scoop install $tool }
+            }
+        } else { wh "  Skipping $tool (some features limited)." DarkGray }
+    } else {
+        wh "  No package manager found (choco/winget/scoop)." Yellow
+        wh "  Install $tool manually from the web and re-run." DarkGray
+    }
+    Write-Host ""
+}
+
+function Start-AttackRun($target, [bool]$fullScan = $false) {
+    $conf = Get-AttackConf
+    if ($conf.enabled -ne "true") {
+        Write-Host ""
+        wh "  killport attack is not configured." Yellow
+        Write-Host "  Run: " -NoNewline; wh "killport attack config" White
+        Write-Host ""
+        return
+    }
+
+    if (-not (Get-Command nmap -ErrorAction SilentlyContinue)) {
+        Request-ToolInstall "nmap" "needed for port/service scanning"
+        if (-not (Get-Command nmap -ErrorAction SilentlyContinue)) { return }
+    }
+    if (-not (Get-Command hashcat -ErrorAction SilentlyContinue) -and
+        -not (Get-Command john    -ErrorAction SilentlyContinue)) {
+        Request-ToolInstall "hashcat" "needed for hash cracking (optional)"
+    }
+
+    $py = @("python","python3","py") |
+          Where-Object { Get-Command $_ -ErrorAction SilentlyContinue } |
+          Select-Object -First 1
+    if (-not $py) { wh "  Python not found. Install from https://python.org" Yellow; return }
+
+    Write-Host ""
+    wh "  killport attack" Cyan -nl:$false; Write-Host "  -  AI Penetration Test"
+    Write-Rule
+    wh "  Target: " White -nl:$false; wh $target Green
+    Write-Host ""
+
+    $barWidth  = 40
+    $blockChar = [string][char]9608   # filled block
+    $lightChar = [string][char]9617   # light shade
+    $nmapLines = [System.Collections.Generic.List[string]]::new()
+
+    if ($fullScan) {
+        wh "  Scanning all 65535 ports" DarkGray -nl:$false; wh "  (this may take several minutes)" DarkGray
+        Write-Host ""
+        & nmap -p- --open -sV -T4 --stats-every 3s $target 2>&1 | ForEach-Object {
+            $line = "$_"
+            if ($line -match '(\d+(?:\.\d+)?)% done') {
+                $pct    = [int][double]$Matches[1]
+                $filled = [int]($pct * $barWidth / 100)
+                $bar    = ($blockChar * $filled) + ($lightChar * ($barWidth - $filled))
+                Write-Host "  [$bar] $($pct.ToString().PadLeft(3))%  `r" -NoNewline
+            } else {
+                $nmapLines.Add($line)
+            }
+        }
+        Write-Host ("  " + (" " * ($barWidth + 10)) + "`r") -NoNewline
+    } else {
+        wh "  Scanning common ports..." DarkGray
+        & nmap --open -sV -T4 $target 2>&1 | ForEach-Object { $nmapLines.Add("$_") }
+    }
+
+    $nmapOutput = $nmapLines -join "`n"
+    if (-not $nmapOutput.Trim()) { wh "  nmap scan returned no output." Yellow; return }
+    Write-Host ""; wh "  Scan complete." Green; Write-Host ""
+    Write-Host $nmapOutput; Write-Host ""
+
+    try {
+        $null = (Invoke-WebRequest -Uri "$($conf.ollama_host)/api/tags" -UseBasicParsing -TimeoutSec 5 -ErrorAction Stop)
+    } catch {
+        wh "  Ollama not reachable at $($conf.ollama_host)" Yellow
+        Write-Host "  Start Ollama and re-run, or update: " -NoNewline; wh "killport attack config" White
+        return
+    }
+
+    wh "  Starting AI pentest agent" Cyan -nl:$false; wh "  (model: $($conf.model))" DarkGray
+    Write-Host ""
+
+    $pyScript = @'
+import sys, json, subprocess, re, datetime, urllib.request
+
+target   = sys.argv[1]
+host     = sys.argv[2]
+model    = sys.argv[3]
+log_path = sys.argv[4]
+nmap_out = sys.stdin.read()
+
+MAX_ITERS = 12
+TOOLS = {
+    "nmap_scan":   "nmap -sV --open -p {ports} {target}",
+    "http_probe":  "curl -sk --max-time 5 http://{target}:{port}/",
+    "https_probe": "curl -sk --max-time 5 https://{target}:{port}/",
+    "banner_grab": "nmap -sV -p {port} {target}",
+    "run_script":  "nmap --script={script} -p {port} {target}",
+}
+
+def ollama_chat(messages):
+    body = json.dumps({"model":model,"messages":messages,"stream":False}).encode()
+    req  = urllib.request.Request(f"{host}/api/chat", data=body,
+                                   headers={"Content-Type":"application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=120) as r:
+            content = json.loads(r.read())["message"]["content"]
+            return re.sub(r'<think>.*?</think>','',content,flags=re.DOTALL).strip()
+    except Exception as e:
+        return f"ERROR: {e}"
+
+def run_tool(name, params):
+    tpl = TOOLS.get(name)
+    if not tpl: return f"Unknown tool: {name}"
+    try:
+        cmd = tpl.format(target=target, **params)
+        r   = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=60)
+        return (r.stdout + r.stderr).strip() or "(no output)"
+    except Exception as e:
+        return f"Error: {e}"
+
+def log(text):
+    ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    with open(log_path, "a", encoding="utf-8") as f:
+        f.write(f"[{ts}] {text}\n")
+
+SYSTEM = f"""You are an expert penetration tester investigating: {target}
+Use a ReAct loop: Thought -> Action -> Observation -> repeat -> Final Answer.
+
+Available tools (JSON):
+{json.dumps(TOOLS, indent=2)}
+
+Format each action as:
+Action: {{"tool": "tool_name", "params": {{...}}}}
+
+When done:
+Final Answer: <full markdown pentest report>"""
+
+messages = [
+    {"role":"system","content":SYSTEM},
+    {"role":"user",  "content":f"Initial nmap scan:\n\n{nmap_out}\n\nBegin your investigation."}
+]
+
+log(f"=== Attack started: {target} ===  model={model}")
+
+for _ in range(MAX_ITERS):
+    reply = ollama_chat(messages)
+    if not reply: print("  [AI] No response from Ollama."); break
+    print(f"\n  [AI] {reply}\n"); log(f"AI: {reply}")
+
+    if "Final Answer:" in reply:
+        report = reply.split("Final Answer:",1)[1].strip()
+        log(f"REPORT:\n{report}")
+        print("\n" + "="*60 + "\n  PENTEST REPORT\n" + "="*60)
+        print(report)
+        print("="*60 + "\n")
+        break
+
+    m = re.search(r'Action:\s*(\{.*?\})', reply, re.DOTALL)
+    if m:
+        try:
+            act  = json.loads(m.group(1))
+            name = act.get("tool",""); params = act.get("params",{})
+            print(f"  [TOOL] {name}({params})"); log(f"TOOL: {name}({params})")
+            obs  = run_tool(name, params)
+            print(f"  [OBS]  {obs[:500]}"); log(f"OBS: {obs[:500]}")
+            messages += [{"role":"assistant","content":reply},
+                         {"role":"user","content":f"Observation: {obs}"}]
+        except json.JSONDecodeError:
+            messages += [{"role":"assistant","content":reply},
+                         {"role":"user","content":"Continue your investigation."}]
+    else:
+        messages += [{"role":"assistant","content":reply},
+                     {"role":"user","content":"Continue your investigation."}]
+
+log(f"=== Attack ended: {target} ===")
+'@
+
+    $pyFile = "$env:TEMP\kp_attack_$(Get-Random).py"
+    [System.IO.File]::WriteAllText($pyFile, $pyScript, (New-Object System.Text.UTF8Encoding $True))
+
+    $logDir = "$env:ProgramData\killport"
+    if (-not (Test-Path $logDir)) { New-Item -ItemType Directory -Force -Path $logDir | Out-Null }
+
+    $nmapOutput | & $py $pyFile $target $conf.ollama_host $conf.model $ATTACK_LOG
+
+    Remove-Item $pyFile -ErrorAction SilentlyContinue
+}
+
+function Invoke-AttackDispatch($sub, $arg) {
+    $subCmd = if ($sub) { $sub.ToLower() } else { "" }
+    switch ($subCmd) {
+        "config"   { Show-AttackConfig }
+        "log"      { Show-AttackLog }
+        "allports" {
+            if (-not $arg) { wh "  Usage: killport attack allports <ip>" Yellow; Write-Host ""; return }
+            Start-AttackRun $arg $true
+        }
+        ""         {
+            Write-Host ""
+            wh "  killport attack" Cyan
+            Write-Rule
+            Write-Host ""
+            Write-Host "  killport attack <ip>              AI pentest (common ports)"
+            Write-Host "  killport attack allports <ip>     AI pentest (all 65535 ports)"
+            Write-Host "  killport attack config            configure Ollama host and model"
+            Write-Host "  killport attack log               view last attack log"
+            Write-Host ""
+        }
+        default    { Start-AttackRun $sub }
+    }
+}
+
 # ── main ─────────────────────────────────────────────────────────────────────
 
 if (-not $Command) {
@@ -343,6 +617,11 @@ if (-not $Command) {
     Write-Host "  killport update            update to the latest version"
     Write-Host "  killport uninstall         remove killport and all firewall rules"
     Write-Host ""
+    wh "  killport attack <ip>              AI pentest (common ports)" DarkGray
+    wh "  killport attack allports <ip>     AI pentest (all 65535 ports)" DarkGray
+    wh "  killport attack config            configure Ollama host and model" DarkGray
+    wh "  killport attack log               view last attack log" DarkGray
+    Write-Host ""
     exit 0
 }
 
@@ -353,6 +632,7 @@ switch ($Command.ToLower()) {
     "openports"   { Open-Ports }
     "closedports" { Closed-Ports }
     "ip"          { Show-IP }
+    "attack"      { Invoke-AttackDispatch $Port $Extra }
     "status"      { if (-not $Port) { Write-Host "Usage: killport status <port>" } else { Status-Port $Port } }
     "open"        { if (-not $Port) { Write-Host "Usage: killport open <port>" } else { Open-Port $Port } }
     "close"       { if (-not $Port) { Write-Host "Usage: killport close <port>" } else { Close-Port $Port } }
