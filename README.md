@@ -55,6 +55,11 @@ Installs `killport.bat` to `System32` (always in PATH for CMD and PowerShell) an
 | `killport ip` | Show IP addresses, DNS, and network info |
 | `killport update` | Update to the latest version |
 | `killport uninstall` | Remove killport and all firewall rules |
+| `killport attack <ip>` | AI pentest: scan 47 common ports + analysis |
+| `killport attack allports <ip>` | AI pentest: scan all 65535 ports + analysis |
+| `killport attack <ip>:<port>` | AI pentest: single port deep dive |
+| `killport attack config` | Configure Ollama host and model |
+| `killport attack log` | View attack history |
 
 ---
 
@@ -191,6 +196,98 @@ curl -fsSL https://raw.githubusercontent.com/skosari/killport-win/main/uninstall
 ```
 
 Removes the binary, implementation files, and all firewall rules created by `killport open`.
+
+---
+
+## AI Penetration Testing
+
+`killport attack` is an agentic AI-powered pentest tool that uses a locally running [Ollama](https://ollama.com) model to investigate open ports, probe for weak credentials, check for sensitive paths, and attempt to crack discovered hashes — all from the command line.
+
+### Setup
+
+1. [Install Ollama](https://ollama.com/download) and pull a model:
+   ```sh
+   ollama pull llama3.2
+   ```
+2. Configure killport to point at your Ollama instance:
+   ```sh
+   killport attack config
+   ```
+   - **This machine:** `localhost:11434` or `127.0.0.1:11434`
+   - **Another LAN machine:** `192.168.x.x:11434`
+   - **Remote server:** `45.76.x.x:11434` *(port 11434 must be open)*
+
+   The config screen connects to Ollama and lets you pick from your loaded models.
+
+3. Missing tools (`nmap`, `sshpass`, `hashcat`) are detected automatically and offered for install via Chocolatey, winget, or Scoop when you run an attack.
+
+### Commands
+
+```sh
+killport attack 192.168.1.10            # scan 47 common ports
+killport attack allports 192.168.1.10   # scan all 65535 ports
+killport attack 192.168.1.10:6379       # single port deep dive
+killport attack config                  # configure Ollama
+killport attack log                     # view attack history
+```
+
+### How it works
+
+The agent runs a **ReAct loop** — Ollama decides what to investigate next, calls a tool, receives the result, and iterates (up to 20 rounds). Tools available to the agent:
+
+| Tool | What it does |
+|---|---|
+| `SCAN_PORT` | Deep nmap scan with version detection |
+| `BANNER_GRAB` | Raw TCP banner grab, extracts hashes |
+| `HTTP_PROBE` | Fetch HTTP/HTTPS response, extract hashes |
+| `HTTP_PATHS` | Probe sensitive paths (`/admin`, `/.env`, `/actuator/env`, etc.) |
+| `WORDLIST` | Try common credentials across SSH, FTP, Redis, MySQL, PostgreSQL, HTTP |
+| `NMAP_SCRIPT` | Run nmap NSE scripts |
+| `CRACK_HASH` | Crack MD5/SHA1/SHA256/bcrypt hashes via hashcat or john + rockyou |
+
+### Example output
+
+```
+  AI Pentest  →  192.168.1.10  (47 common ports)
+  ────────────────────────────────────────────
+
+  Pass 1/2  Scanning 47 common ports on 192.168.1.10...
+
+  ●  22        ssh           OpenSSH 8.9p1
+  ●  6379      redis         Redis 7.0.11
+  ●  27017     mongodb       MongoDB 6.0
+
+  Agent starting  target: 192.168.1.10  ·  model: llama3.2
+
+  ▶  SCAN_PORT 6379
+  ▶  WORDLIST redis 6379
+     CRITICAL: Redis has NO password — fully open to anyone
+  ▶  REPORT
+
+  ══════════════════════════════════════════════════════════════
+    SECURITY REPORT  ·  192.168.1.10  ·  2025-04-17 14:32
+    Model: llama3.2
+  ══════════════════════════════════════════════════════════════
+
+    PORT 6379 — REDIS
+    Risk: 🔴 Critical
+    ────────────────────────────────────────────────────────
+    ⚠  NO PASSWORD REQUIRED — anyone on the network can connect
+
+    What this means:
+      Your Redis database has no password set.
+      Anyone on your network can read, modify, or delete all stored data.
+
+    How to fix it:
+      1. Set a strong password: add  requirepass YOURPASSWORD  to redis.conf
+      2. Bind Redis to localhost only: add  bind 127.0.0.1  to redis.conf
+      3. Block port 6379 from the network with a firewall rule
+
+  ══════════════════════════════════════════════════════════════
+  ── What to do first ──
+  ══════════════════════════════════════════════════════════════
+    1. [CRITICAL] Set a password on redis (port 6379) — it has none right now
+```
 
 ---
 
