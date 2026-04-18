@@ -547,7 +547,7 @@ function Start-AttackRun($target, [bool]$fullScan = $false) {
     if (-not $conf.ollama_host -or $conf.enabled -ne "true") {
         Write-Host ""
         wh "  killport attack is not configured." Yellow
-        Write-Host "  Run: " -NoNewline; wh "killport attack config" White
+        Write-Host "  Run: " -NoNewline; wh "killport config" White
         Write-Host ""
         return
     }
@@ -606,7 +606,7 @@ function Start-AttackRun($target, [bool]$fullScan = $false) {
         $null = (Invoke-WebRequest -Uri "$($conf.ollama_host)/api/tags" -UseBasicParsing -TimeoutSec 5 -ErrorAction Stop)
     } catch {
         wh "  Ollama not reachable at $($conf.ollama_host)" Yellow
-        Write-Host "  Start Ollama and re-run, or update: " -NoNewline; wh "killport attack config" White
+        Write-Host "  Start Ollama and re-run, or update: " -NoNewline; wh "killport config" White
         return
     }
 
@@ -969,7 +969,7 @@ function Invoke-AttackDispatch($sub, $arg) {
             Write-Host ""
             Write-Host "  killport attack <ip>              AI pentest (common ports)"
             Write-Host "  killport attack allports <ip>     AI pentest (all 65535 ports)"
-            Write-Host "  killport attack config            configure Ollama host and model"
+            Write-Host "  killport config            configure Ollama host and model"
             Write-Host "  killport attack log               view last attack log"
             Write-Host ""
         }
@@ -1514,10 +1514,13 @@ prompt=(f"Service: {SVC} {VER}\nTarget: {IP}:{PORT}\n\nTop CVEs:\n{cve_text}\n\n
         f"UPGRADE: exact command to upgrade {SVC} on Windows\n"
         f"CONFIG: top 4 config hardening settings with exact values\n"
         f"NETWORK: Windows Firewall (netsh) commands to restrict access to port {PORT}\n\n"
-        f"Be concise. No preamble. Version-specific where possible.")
+        f"Be concise. No preamble. No markdown. No code fences. No concluding paragraph. Stop after NETWORK section. Version-specific where possible.")
 if MODEL:
     try:
-        payload=json.dumps({"model":MODEL,"messages":[{"role":"user","content":prompt}],"stream":True})
+        payload=json.dumps({"model":MODEL,"think":False,"messages":[
+            {"role":"system","content":"You are a security expert. Output ONLY exact commands and config values. No reasoning. No thinking. No explanations. Just the commands."},
+            {"role":"user","content":prompt}
+        ],"stream":True,"options":{"temperature":0}})
         proc=subprocess.Popen(["curl","-sN",f"http://{OLLAMA}/api/chat",
              "-H","Content-Type: application/json","--data-binary",payload],
             stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,text=True)
@@ -1537,11 +1540,21 @@ if MODEL:
                 if obj.get("done",False): break
             except: pass
         proc.wait()
-        sys.stdout.write("\r"+" "*50+"\r"); sys.stdout.flush()
+        sys.stdout.write("\r"+" "*80+"\r\n"); sys.stdout.flush()
         full=re.sub(r'<think>.*?</think>','',full,flags=re.DOTALL)
         full=re.sub(r'^.*?</think>\s*','',full,flags=re.DOTALL)
         full=re.sub(r'<think>.*','',full,flags=re.DOTALL)
-        full=full.strip()
+        full=re.sub(r'```\w*','',full)
+        m=re.search(r'^(UPGRADE|CONFIG|NETWORK)[:\s]',full,re.MULTILINE|re.IGNORECASE)
+        if m: full=full[m.start():]
+        lines=full.splitlines()
+        last_cmd=0
+        for i,l in enumerate(lines):
+            s=l.strip()
+            if s and (s.startswith('#') or re.match(r'^(UPGRADE|CONFIG|NETWORK)[:\s]',s,re.I)
+                      or any(w in s for w in ('netsh','Set-','Add-','Remove-','New-','sudo','=','Protocol','Permit','Allow','Deny','Max','Log','Cipher','Port ','ssh','sshd','sc ','reg ','bcdedit'))):
+                last_cmd=i
+        full='\n'.join(lines[:last_cmd+1]).strip()
         if full:
             for line in full.splitlines():
                 l=line.rstrip()
@@ -1555,7 +1568,7 @@ if MODEL:
     except Exception as e:
         print(f"  AI unavailable: {e}")
 else:
-    print("  No model configured - run: killport attack config")
+    print("  No model configured - run: killport config")
 
 print(f"\n\033[0;36m  ────────────────────────────────────────────\033[0m")
 '@
@@ -1796,7 +1809,7 @@ if (-not $Command) {
     Write-Host ""
     wh "  killport attack <ip>              AI pentest (common ports)" DarkGray
     wh "  killport attack allports <ip>     AI pentest (all 65535 ports)" DarkGray
-    wh "  killport attack config            configure Ollama host and model" DarkGray
+    wh "  killport config            configure Ollama host and model" DarkGray
     wh "  killport attack log               view last attack log" DarkGray
     Write-Host ""
     exit 0
@@ -1809,6 +1822,7 @@ switch ($Command.ToLower()) {
     "openports"   { Open-Ports $Port }
     "closedports" { Closed-Ports }
     "ip"          { Show-IP }
+    "config"      { Invoke-AttackConfig }
     "attack"      { Invoke-AttackDispatch $Port $Extra }
     "stress"      { Invoke-StressDispatch $Port }
     "scan"        { Invoke-Scan $Port $Extra }
