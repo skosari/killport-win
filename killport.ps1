@@ -4,7 +4,7 @@ param(
     [Parameter(Mandatory=$false, Position=2)] [string]$Extra
 )
 
-$VERSION = "1.10.2"
+$VERSION = "1.10.3"
 $REPO    = "skosari/killport-win"
 $RAW     = "https://raw.githubusercontent.com/$REPO/main"
 
@@ -1308,6 +1308,309 @@ except Exception as e: print(f"  Error: {e}")
     Write-Host ""
 }
 
+# ── fix ──────────────────────────────────────────────────────────────────────
+
+function Invoke-Fix($target) {
+    if (-not $target -or $target -notmatch ':') {
+        Write-Host ""; wh "  Usage: killport fix <ip:port>" Yellow; Write-Host ""; return
+    }
+    $ip_  = $target -replace ':.*'
+    $port_= $target -replace '.*:'
+
+    $nmap = (Get-Command nmap -ErrorAction SilentlyContinue)?.Source
+    if (-not $nmap) { wh "  nmap required. Download from https://nmap.org" Yellow; return }
+
+    Write-Host ""
+    wh "  killport fix" Cyan -nl; wh "  $target" DarkGray; Write-Host ""
+    Write-Rule; Write-Host ""
+    wh "  Detecting service on port $port_..." DarkGray; Write-Host ""
+
+    $raw = & $nmap -sV -p $port_ --open -T4 $ip_ 2>$null | Out-String
+    $svcLine = ($raw -split "`n" | Where-Object { $_ -match "${port_}/tcp" } | Select-Object -First 1)
+    if (-not $svcLine) { wh "  Could not detect service on ${ip_}:${port_}" Yellow; Write-Host ""; return }
+    $parts = $svcLine.Trim() -split '\s+',5
+    $svc = $parts[2]; $ver = if ($parts.Count -ge 4) { ($parts[3..($parts.Count-1)] -join " ").Trim() } else { "" }
+    if (-not $svc -or $svc -eq "open") { wh "  Could not detect service." Yellow; Write-Host ""; return }
+
+    wh "  Service:" -nl; Write-Host "  $svc"
+    wh "  Version:" -nl; wh "  $ver" DarkGray; Write-Host ""
+
+    # Detect if local
+    $isLocal = ($ip_ -eq "127.0.0.1" -or $ip_ -eq "localhost" -or $ip_ -eq "::1")
+    if (-not $isLocal) {
+        $ownIPs = (Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue).IPAddress
+        $isLocal = $ownIPs -contains $ip_
+    }
+    if ($isLocal) { wh "  ✓  Target is this machine — can apply fixes directly." Green }
+    else           { wh "  Remote target — will generate a fix script to copy over." DarkGray }
+    Write-Host ""
+
+    # Load Ollama config
+    $confPath = "$env:ProgramData\killport\attack.conf"
+    $ollamaHost = "localhost:11434"; $model = ""
+    if (Test-Path $confPath) {
+        Get-Content $confPath | ForEach-Object {
+            if ($_ -match '^OLLAMA_HOST=(.+)') { $ollamaHost = $Matches[1].Trim() }
+            if ($_ -match '^MODEL=(.+)')       { $model      = $Matches[1].Trim() }
+        }
+    }
+
+    $py = (Get-Command python -ErrorAction SilentlyContinue)?.Source
+    if (-not $py) { $py = (Get-Command python3 -ErrorAction SilentlyContinue)?.Source }
+    if (-not $py) { wh "  Python required for fix generation." Yellow; return }
+
+    $logDir = "$env:ProgramData\killport"
+    if (-not (Test-Path $logDir)) { New-Item -ItemType Directory -Force -Path $logDir | Out-Null }
+    $scriptOut = "$env:TEMP\kp_fix_apply_$(Get-Random).ps1"
+
+    $pyScript = @'
+import sys,json,subprocess,os,re,datetime
+try: import urllib.request,urllib.parse; HAS_NET=True
+except: HAS_NET=False
+
+IP=sys.argv[1]; PORT=sys.argv[2]; SVC=sys.argv[3]; VER=sys.argv[4]
+IS_LOCAL=sys.argv[5]=="1"; OLLAMA=sys.argv[6]; MODEL=sys.argv[7]; SCRIPT_OUT=sys.argv[8]
+
+B="\033[1m"; C="\033[0;36m"; D="\033[2m"; G="\033[0;32m"
+Y="\033[0;33m"; RE="\033[0;31m"; R="\033[0m"
+SC={"CRITICAL":RE,"HIGH":RE,"MEDIUM":Y,"LOW":G,"NONE":D}
+
+cvelist=[]
+if HAS_NET:
+    try:
+        print(f"  {D}Querying NVD database...{R}",flush=True)
+        kw=f"{SVC} {VER.split()[0]}" if VER else SVC
+        query=urllib.parse.quote(kw)
+        url=f"https://services.nvd.nist.gov/rest/json/cves/2.0?keywordSearch={query}&resultsPerPage=5"
+        req=urllib.request.Request(url,headers={"User-Agent":"killport/1.0"})
+        with urllib.request.urlopen(req,timeout=12) as r: obj=json.loads(r.read())
+        vulns=obj.get("vulnerabilities",[]); total=obj.get("totalResults",len(vulns))
+        if vulns:
+            print(f"\n  {B}{total}{R} CVE(s) - top {len(vulns)} shown:\n")
+            for v in vulns:
+                c=v.get("cve",{})
+                cid=c.get("id","?")
+                desc=next((d["value"] for d in c.get("descriptions",[]) if d.get("lang")=="en"),"")[:100]
+                sev,score="UNKNOWN",""
+                for mk in ("cvssMetricV31","cvssMetricV30","cvssMetricV2"):
+                    if mk in c.get("metrics",{}):
+                        m0=c["metrics"][mk][0]; cd=m0.get("cvssData",{})
+                        sev=cd.get("baseSeverity",m0.get("baseSeverity","?")); score=str(cd.get("baseScore",""))
+                        break
+                sc=SC.get(sev.upper(),D)
+                print(f"  {B}{cid}{R}  {sc}[{sev}  {score}]{R}")
+                print(f"  {D}{desc}{'...' if len(desc)==100 else ''}{R}\n")
+                cvelist.append(f"{cid} [{sev} {score}]: {desc}")
+    except Exception as e:
+        print(f"  {Y}NVD unavailable: {e}{R}\n")
+
+def gen_script():
+    L=["# killport fix script (PowerShell)",
+       f"# Service: {SVC} {VER}  Target: {IP}:{PORT}",
+       f"# Generated: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M')}",
+       "","function log($m){ Write-Host \"  [fix] $m\" }",
+       "function warn($m){ Write-Host \"  [!]  $m\" -ForegroundColor Yellow }",""]
+    s=SVC.lower()
+    if "ssh" in s or s=="openssh":
+        L+=[
+            "log 'Hardening OpenSSH for Windows (OpenSSH Server)'",
+            "$conf = \"$env:ProgramData\\ssh\\sshd_config\"",
+            "if (-not (Test-Path $conf)) { warn 'sshd_config not found. Install OpenSSH Server first.'; exit 1 }",
+            "Copy-Item $conf \"${conf}.bak\" -Force",
+            "function Set-SshdOpt($key,$val) {",
+            "  $c=Get-Content $conf",
+            "  if ($c -match \"^#?\\s*$key\\s\") { $c=$c -replace \"^#?\\s*$key\\s.*\",\"$key $val\" }",
+            "  else { $c+=\"$key $val\" }",
+            "  Set-Content $conf $c",
+            "}",
+            "Set-SshdOpt 'PermitRootLogin' 'no'",
+            "Set-SshdOpt 'MaxAuthTries' '3'",
+            "Set-SshdOpt 'X11Forwarding' 'no'",
+            "Set-SshdOpt 'PermitEmptyPasswords' 'no'",
+            "Set-SshdOpt 'LoginGraceTime' '30'",
+            "Set-SshdOpt 'ClientAliveInterval' '300'",
+            "Restart-Service sshd -ErrorAction SilentlyContinue",
+            "log 'SSH hardened and restarted'",
+            "# Upgrade via winget",
+            "winget upgrade --id Microsoft.OpenSSH.Beta -e 2>$null | Out-Null",
+            "log 'OpenSSH upgrade attempted via winget'",
+        ]
+    elif "redis" in s:
+        L+=[
+            "log 'Hardening Redis...'",
+            "$conf = (Get-ChildItem 'C:\\','C:\\Program Files\\Redis' -Filter redis.conf -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1).FullName",
+            "if (-not $conf) { warn 'redis.conf not found'; exit 1 }",
+            "Copy-Item $conf \"${conf}.bak\" -Force",
+            "$c = Get-Content $conf",
+            "$c = $c -replace '^bind .*','bind 127.0.0.1'",
+            "if (-not ($c -match '^requirepass')) {",
+            "  Add-Type -AssemblyName System.Web",
+            "  $pass = [System.Web.Security.Membership]::GeneratePassword(32,4)",
+            "  $c += \"requirepass $pass\"",
+            "  warn \"Redis password set to: $pass  - save this now\"",
+            "}",
+            "foreach ($cmd in @('FLUSHALL','FLUSHDB','CONFIG','DEBUG')) {",
+            "  if (-not ($c -match \"rename-command $cmd\")) { $c += \"rename-command $cmd `\"`\"\" }",
+            "}",
+            "Set-Content $conf $c",
+            "Restart-Service Redis -ErrorAction SilentlyContinue",
+            "log 'Redis hardened and restarted'",
+        ]
+    elif "mysql" in s or "mariadb" in s:
+        L+=[
+            "log 'Hardening MySQL...'",
+            "$sql = @'",
+            "DELETE FROM mysql.user WHERE User='';",
+            "DELETE FROM mysql.user WHERE User='root' AND Host NOT IN ('localhost','127.0.0.1','::1');",
+            "DROP DATABASE IF EXISTS test;",
+            "FLUSH PRIVILEGES;",
+            "'@",
+            "& mysql -u root -e $sql 2>$null",
+            "log 'MySQL: removed anonymous users and test database'",
+            "winget upgrade --id Oracle.MySQL -e 2>$null | Out-Null",
+            "log 'MySQL upgrade attempted via winget'",
+        ]
+    elif "http" in s or "nginx" in s or "apache" in s or "iis" in s:
+        L+=[
+            "log 'Adding IIS security headers...'",
+            "Import-Module WebAdministration -ErrorAction SilentlyContinue",
+            "$headers = @{",
+            "  'X-Frame-Options'='SAMEORIGIN';",
+            "  'X-Content-Type-Options'='nosniff';",
+            "  'X-XSS-Protection'='1; mode=block';",
+            "  'Strict-Transport-Security'='max-age=31536000'",
+            "}",
+            "foreach ($h in $headers.GetEnumerator()) {",
+            "  try {",
+            "    Add-WebConfigurationProperty -pspath 'MACHINE/WEBROOT/APPHOST' -filter 'system.webServer/httpProtocol/customHeaders' -name '.' -value @{name=$h.Key;value=$h.Value} -ErrorAction Stop",
+            "    log \"Added header: $($h.Key)\"",
+            "  } catch { warn \"Could not add $($h.Key) - may already exist\" }",
+            "}",
+        ]
+    elif "ftp" in s:
+        L+=[
+            "warn 'FTP is plaintext - disabling'",
+            "Stop-Service ftpsvc -ErrorAction SilentlyContinue",
+            "Set-Service ftpsvc -StartupType Disabled -ErrorAction SilentlyContinue",
+            "log 'FTP disabled - use SFTP instead'",
+        ]
+    else:
+        L+=[
+            f"warn 'No specific template for {SVC} - attempting generic upgrade'",
+            f"winget upgrade --id {SVC} -e 2>$null | Out-Null",
+            "log 'Generic upgrade attempted via winget'",
+        ]
+    L+=["","log 'Fix script completed'",""]
+    return "\n".join(L)
+
+script_body=gen_script()
+with open(SCRIPT_OUT,"w",encoding="utf-8") as f: f.write(script_body)
+
+print(f"\n\033[0;36m  ────────────────────────────────────────────\033[0m")
+print(f"  \033[1m\033[0;36mAI Remediation Advice\033[0m\n")
+cve_text="\n".join(cvelist[:5]) if cvelist else "(no CVE data)"
+prompt=(f"Service: {SVC} {VER}\nTarget: {IP}:{PORT}\n\nTop CVEs:\n{cve_text}\n\n"
+        f"Give specific remediation in exactly 3 labeled sections:\n"
+        f"UPGRADE: exact command to upgrade {SVC} on Windows\n"
+        f"CONFIG: top 4 config hardening settings with exact values\n"
+        f"NETWORK: Windows Firewall (netsh) commands to restrict access to port {PORT}\n\n"
+        f"Be concise. No preamble. Version-specific where possible.")
+if MODEL:
+    try:
+        payload=json.dumps({"model":MODEL,"messages":[{"role":"user","content":prompt}],"stream":True})
+        proc=subprocess.Popen(["curl","-sN",f"http://{OLLAMA}/api/chat",
+             "-H","Content-Type: application/json","--data-binary",payload],
+            stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,text=True)
+        SP=["|-","/|","-|","\\|"]
+        full=""; tok=0; in_think=False
+        for raw in iter(proc.stdout.readline,""):
+            try:
+                obj=json.loads(raw.strip())
+                t=obj.get("message",{}).get("content","")
+                if t:
+                    full+=t; tok+=1
+                    if "<think>" in t: in_think=True
+                    if "</think>" in t: in_think=False
+                    lbl="thinking" if in_think else "generating"
+                    sys.stdout.write(f"\r  {SP[tok%len(SP)]}  {tok} tokens  [{lbl}]   ")
+                    sys.stdout.flush()
+                if obj.get("done",False): break
+            except: pass
+        proc.wait()
+        sys.stdout.write("\r"+" "*50+"\r"); sys.stdout.flush()
+        full=re.sub(r'<think>.*?</think>','',full,flags=re.DOTALL)
+        full=re.sub(r'^.*?</think>\s*','',full,flags=re.DOTALL)
+        full=re.sub(r'<think>.*','',full,flags=re.DOTALL)
+        full=full.strip()
+        if full:
+            for line in full.splitlines():
+                l=line.rstrip()
+                if re.match(r'^(UPGRADE|CONFIG|NETWORK)[:\s]',l,re.I):
+                    print(f"\n  \033[1m\033[0;36m{l}\033[0m")
+                elif l.startswith("  ") or l.startswith("\t"):
+                    print(f"  \033[2m{l}\033[0m")
+                elif l: print(f"  {l}")
+        else:
+            print("  (no AI response - is Ollama running?)")
+    except Exception as e:
+        print(f"  AI unavailable: {e}")
+else:
+    print("  No model configured - run: killport attack config")
+
+print(f"\n\033[0;36m  ────────────────────────────────────────────\033[0m")
+'@
+    $pyFile = "$env:TEMP\kp_fix_$(Get-Random).py"
+    [System.IO.File]::WriteAllText($pyFile, $pyScript, (New-Object System.Text.UTF8Encoding $true))
+    try {
+        & $py $pyFile $ip_ $port_ $svc $ver ([int]$isLocal) $ollamaHost $model $scriptOut
+    } finally {
+        Remove-Item $pyFile -ErrorAction SilentlyContinue
+    }
+
+    if (-not (Test-Path $scriptOut) -or (Get-Item $scriptOut).Length -eq 0) {
+        wh "  Fix script generation failed." Yellow; Write-Host ""; return
+    }
+
+    if ($isLocal) {
+        Write-Host ""
+        $ans = Read-Host "  Apply these fixes now? (requires Admin)  [yes/N]"
+        if ($ans -eq "yes") {
+            Write-Rule; Write-Host ""
+            & powershell -ExecutionPolicy Bypass -File $scriptOut
+            Write-Host ""; Write-Rule
+            wh "  ✓  Fixes applied.  Verify with: killport vuln $target" Green
+        } else {
+            wh "  Fix script saved to: $scriptOut" DarkGray
+            wh "  Run manually:  powershell -ExecutionPolicy Bypass -File `"$scriptOut`"" DarkGray
+        }
+    } else {
+        wh "  Fix script saved to: $scriptOut" DarkGray
+        Write-Host ""
+        wh "  Copy to remote machine and run:" DarkGray
+        wh "  scp `"$scriptOut`" user@${ip_}:C:\fix.ps1" -nl
+        wh "  ssh user@${ip_} 'powershell -ExecutionPolicy Bypass -File C:\fix.ps1'" -nl
+    }
+    Write-Host ""
+}
+
+function Invoke-FixDispatch($sub) {
+    if (-not $sub) {
+        Write-Host ""
+        wh "  killport fix" Cyan -nl; wh "  detect and fix service vulnerabilities" DarkGray; Write-Host ""
+        Write-Rule; Write-Host ""
+        Write-Host "  killport fix <ip:port>     detect vulnerabilities and generate/apply a fix"
+        Write-Host ""
+        wh "  Examples:" DarkGray
+        wh "    killport fix 192.168.1.10:22     harden SSH" DarkGray
+        wh "    killport fix 192.168.1.10:6379   harden Redis" DarkGray
+        wh "    killport fix 127.0.0.1:3306      harden MySQL locally" DarkGray
+        Write-Host ""
+        wh "  Supports: SSH, Redis, MySQL, HTTP/IIS, FTP" DarkGray
+        Write-Host ""; return
+    }
+    Invoke-Fix $sub
+}
+
 # ── audit ────────────────────────────────────────────────────────────────────
 
 function Audit-Firewall {
@@ -1483,6 +1786,7 @@ if (-not $Command) {
     Write-Host "  killport sniff <port>      capture and display traffic on a port"
     Write-Host "  killport sniff <ip:port>   capture traffic to/from a specific host:port"
     Write-Host "  killport vuln <ip:port>    detect service version + query CVE database"
+    Write-Host "  killport fix <ip:port>     detect vulns and generate/apply a fix"
     Write-Host "  killport audit             review firewall rules with plain-English findings"
     Write-Host "  killport dns <domain>      DNS recon: A/MX/TXT/NS/AXFR zone transfer test"
     Write-Host "  killport forward <p> <h:p> forward a local port to a remote host:port"
@@ -1512,6 +1816,7 @@ switch ($Command.ToLower()) {
     "cert"        { Check-Cert $Port }
     "sniff"       { Sniff-Port $Port }
     "vuln"        { Check-Vuln $Port }
+    "fix"         { Invoke-FixDispatch $Port }
     "audit"       { Audit-Firewall }
     "dns"         { Invoke-DnsRecon $Port }
     "forward"     { Forward-Port $Port $Extra }
