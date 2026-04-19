@@ -6,7 +6,7 @@ param(
     [Parameter(Mandatory=$false, Position=4)] [string]$Arg4
 )
 
-$VERSION = "1.10.23"
+$VERSION = "1.10.24"
 $REPO    = "skosari/killport-win"
 $RAW     = "https://raw.githubusercontent.com/$REPO/main"
 
@@ -19,7 +19,13 @@ function wh($msg, $fg, [switch]$nl = $true) {
     else     { Write-Host $msg -NoNewline:(!$nl) }
 }
 
-function Get-CmdPath([string]$Name) { $c = Get-Command $Name -ErrorAction SilentlyContinue; if ($c) { $c.Source } }
+function Get-CmdPath([string]$Name) {
+    $c = Get-Command $Name -ErrorAction SilentlyContinue
+    if ($c) { return $c.Source }
+    # OpenSSH installs to System32\OpenSSH but may not be in PATH under -NoProfile
+    $fallback = "$env:SystemRoot\System32\OpenSSH\$Name.exe"
+    if (Test-Path $fallback) { return $fallback }
+}
 
 function Get-RemoteVersion {
     try {
@@ -376,6 +382,16 @@ function Kill-Port($p) {
         catch { wh "Could not kill PID $procPid - try running as Administrator." Yellow; $failed = $true }
     }
     if (-not $failed) { wh "Killed." Green }
+
+    if ([int]$p -eq 22) {
+        Write-Host ""
+        wh "  Note: Port 22 is SSH." DarkGray
+        wh "  To restore SSH access:" DarkGray
+        wh "    killport open 22                           re-open port 22 through the firewall" DarkGray
+        wh "    Start-Service sshd                         restart the SSH server" DarkGray
+        wh "    Settings -> Apps -> Optional Features      install OpenSSH Server if not present" DarkGray
+        Write-Host ""
+    }
 }
 
 # ── update ───────────────────────────────────────────────────────────────────
