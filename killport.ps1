@@ -6,7 +6,7 @@ param(
     [Parameter(Mandatory=$false, Position=4)] [string]$Arg4
 )
 
-$VERSION = "1.10.21"
+$VERSION = "1.10.22"
 $REPO    = "skosari/killport-win"
 $RAW     = "https://raw.githubusercontent.com/$REPO/main"
 
@@ -2329,27 +2329,20 @@ function Invoke-ShutdownDispatch([string]$subcmd) {
         $base    = ($localIp -replace '\.\d+$', '')
         wh "  Scanning $base.0/24..." DarkGray; Write-Host ""
 
-        $jobs = 1..254 | ForEach-Object { $i = $_; Start-Job -ScriptBlock { param($h) Test-Connection $h -Count 1 -Quiet } -ArgumentList "$base.$i" }
-        $null = $jobs | Wait-Job
-
-        $hosts = @()
-        foreach ($j in $jobs) {
-            $alive = Receive-Job $j
-            if ($alive) {
-                $ip = ($j.Command -replace '.*"([\d\.]+)".*','$1')
-                # get ip from job name workaround
-            }
+        # Ping sweep to populate ARP cache (fire-and-forget)
+        $jobs = 1..254 | ForEach-Object {
+            $ip = "$base.$_"
+            Start-Job -ScriptBlock { param($h) Test-Connection $h -Count 1 -Quiet -ErrorAction SilentlyContinue } -ArgumentList $ip
         }
-        Remove-Job $jobs
+        $null = $jobs | Wait-Job
+        Remove-Job $jobs -Force
 
-        # Simpler: use arp after ping sweep
+        # Check ARP for dynamic entries (detects Windows even when ICMP is blocked)
         $liveHosts = @()
-        1..254 | ForEach-Object { $null = Test-Connection "$base.$_" -Count 1 -Quiet -AsJob }
-        Start-Sleep -Seconds 3
-        $arpOut = arp -a 2>$null
         $count = 0
+        $arpOut = arp -a 2>$null
         foreach ($line in $arpOut) {
-            if ($line -match "^\s+($([regex]::Escape($base))\.\d+)\s+") {
+            if ($line -match "^\s+($([regex]::Escape($base))\.\d+)\s+([\da-f]{2}[:-]){5}[\da-f]{2}\s+dynamic") {
                 $ip = $Matches[1]
                 if ($ip -ne $localIp) {
                     $count++
