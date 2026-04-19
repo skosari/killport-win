@@ -15,7 +15,7 @@ Also available for [macOS](https://github.com/skosari/killport-mac) and [Linux](
 
 AI-powered pentesting, vulnerability scanning, and automated hardening via [Ollama](https://ollama.com) — runs entirely on your hardware
 
-[![Version](https://img.shields.io/badge/version-1.10.3-00b4d8?style=flat-square)](#)
+[![Version](https://img.shields.io/badge/version-1.10.18-00b4d8?style=flat-square)](#)
 [![Platform](https://img.shields.io/badge/platform-Windows-00b4d8?style=flat-square&logo=windows&logoColor=white)](#)
 [![Shell](https://img.shields.io/badge/shell-PowerShell%20%2F%20CMD-00b4d8?style=flat-square&logo=powershell&logoColor=white)](#)
 [![License](https://img.shields.io/badge/license-Source%20Available-00b4d8?style=flat-square)](LICENSE)
@@ -49,14 +49,18 @@ Installs `killport.bat` to `System32` (always in PATH for CMD and PowerShell) an
 | Command | Description |
 |---|---|
 | `killport` | Show help |
+| `killport config` | Configure Ollama host and model |
+| `killport update` | Update to the latest version |
+| `killport uninstall` | Remove killport and all firewall rules |
 | `killport <port>` | Kill whatever is running on that port |
+| `killport ports` | Inspect all ports with firewall status |
+| `killport status <port>` | Show if a port is open or closed |
 | `killport list` | List all listening ports |
 | `killport open <port>` | Open a port through Windows Firewall |
-| `killport close <port>` | Close a port from external connections |
 | `killport openports` | Show all ports open to external access |
 | `killport openports <ip>` | Probe an IP to verify which ports are reachable |
+| `killport close <port>` | Close a port from external connections |
 | `killport closedports` | Show all listening ports with no external access |
-| `killport status <port>` | Show if a port is open or closed |
 | `killport ip` | Show IP addresses, DNS, and network info |
 | `killport scan <ip>` | Scan ports on a remote host (no AI) |
 | `killport scan <ip> all` | Scan all 65535 ports on a remote host |
@@ -65,18 +69,19 @@ Installs `killport.bat` to `System32` (always in PATH for CMD and PowerShell) an
 | `killport sniff <port>` | Capture and display traffic on a port (pktmon) |
 | `killport sniff <ip:port>` | Capture traffic to/from a specific host:port |
 | `killport vuln <ip:port>` | Detect service version + query CVE database |
-| `killport fix <ip:port>` | Detect vulns and generate/apply a hardening fix |
 | `killport audit` | Review firewall rules with plain-English findings |
 | `killport dns <domain>` | DNS recon: A/MX/TXT/NS/AXFR zone transfer test |
 | `killport forward <port> <host:port>` | Forward a local port to a remote host:port |
 | `killport stress <ip:port>` | Authorized connection flood / stress test |
-| `killport attack <ip>` | AI pentest: scan 47 common ports + analysis |
-| `killport attack allports <ip>` | AI pentest: scan all 65535 ports + analysis |
-| `killport attack <ip>:<port>` | AI pentest: single port deep dive |
-| `killport config` | Configure Ollama host and model |
+| `killport wol` | Wake a LAN computer — scan network or pick a saved host |
+| `killport wol <name>` | Wake a saved host by name |
+| `killport wol save <name> <mac> [ip]` | Save a host for quick wake |
+| `killport wol list` | Show all saved WoL hosts |
+| `killport attack <ip>` | AI pentest: scan all ports + analysis (requires Ollama) |
+| `killport attack allports <ip>` | AI pentest: scan all 65535 ports (requires Ollama) |
+| `killport attack <ip>:<port>` | AI pentest: single port deep dive (requires Ollama) |
 | `killport attack log` | View attack history |
-| `killport update` | Update to the latest version |
-| `killport uninstall` | Remove killport and all firewall rules |
+| `killport fix <ip:port>` | Detect vulns and generate/apply a hardening fix (requires Ollama) |
 
 ---
 

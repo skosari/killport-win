@@ -6,7 +6,7 @@ param(
     [Parameter(Mandatory=$false, Position=4)] [string]$Arg4
 )
 
-$VERSION = "1.10.17"
+$VERSION = "1.10.18"
 $REPO    = "skosari/killport-win"
 $RAW     = "https://raw.githubusercontent.com/$REPO/main"
 
@@ -2038,15 +2038,20 @@ if (-not $Command) {
     Show-Banner
     Show-Version
     Write-Host "  killport                   show this help"
+    Write-Host "  killport config            configure Ollama host and model"
+    Write-Host "  killport update            update to the latest version"
+    Write-Host "  killport uninstall         remove killport and all firewall rules"
+    Write-Host ""
     Write-Host "  killport <port>            kill whatever is running on that port"
+    Write-Host "  killport ports             inspect all ports with firewall status"
+    Write-Host "  killport status <port>     show if a port is open or closed"
     Write-Host "  killport list              list all listening ports"
-    Write-Host "  killport open <port>       open a port to external connections"
-    Write-Host "  killport close <port>      close a port from external connections"
+    Write-Host "  killport open <port>       open a port through Windows Firewall"
     Write-Host "  killport openports         show all ports open to external access"
     Write-Host "  killport openports <ip>    probe an IP from this machine to check open ports"
+    Write-Host "  killport close <port>      close a port from external connections"
     Write-Host "  killport closedports       show all listening ports with no external access"
-    Write-Host "  killport status <port>     show if a port is open or closed"
-    Write-Host "  killport ip                show IP addresses and network info"
+    Write-Host "  killport ip                show IP addresses, DNS, and network info"
     Write-Host "  killport scan <ip>         scan ports on a remote host (no AI)"
     Write-Host "  killport scan <ip> all     scan all 65535 ports on a remote host"
     Write-Host "  killport watch <port>      monitor live connections to a local port"
@@ -2054,22 +2059,23 @@ if (-not $Command) {
     Write-Host "  killport sniff <port>      capture and display traffic on a port"
     Write-Host "  killport sniff <ip:port>   capture traffic to/from a specific host:port"
     Write-Host "  killport vuln <ip:port>    detect service version + query CVE database"
-    Write-Host "  killport fix <ip:port>     detect vulns and generate/apply a fix  (requires Ollama)"
     Write-Host "  killport audit             review firewall rules with plain-English findings"
     Write-Host "  killport dns <domain>      DNS recon: A/MX/TXT/NS/AXFR zone transfer test"
     Write-Host "  killport forward <p> <h:p> forward a local port to a remote host:port"
     Write-Host "  killport stress <ip:port>  authorized connection flood / stress test"
-    Write-Host "  killport wol               wake a LAN computer (scan network or use saved hosts)"
+    Write-Host ""
+    Write-Host "  *** WAKE ON LAN ***"
+    Write-Host "  killport wol               scan network and wake or save host"
     Write-Host "  killport wol <name>        wake a saved host by name"
     Write-Host "  killport wol save <n> <mac> [ip]  save a host for quick wake"
     Write-Host "  killport wol list          show saved WoL hosts"
-    Write-Host "  killport update            update to the latest version"
-    Write-Host "  killport uninstall         remove killport and all firewall rules"
     Write-Host ""
-    wh "  killport attack <ip>              AI pentest (common ports)  (requires Ollama)" DarkGray
-    wh "  killport attack allports <ip>     AI pentest (all 65535 ports)  (requires Ollama)" DarkGray
-    wh "  killport config            configure Ollama host and model" DarkGray
-    wh "  killport attack log               view last attack log" DarkGray
+    Write-Host "  *** REQUIRES OLLAMA ***"
+    Write-Host "  killport attack <ip>       AI pentest: scan all ports + analysis  (requires Ollama)"
+    Write-Host "  killport attack allports <ip>  AI pentest: scan all 65535 ports  (requires Ollama)"
+    Write-Host "  killport attack <ip>:port  AI pentest: scan single port + analysis  (requires Ollama)"
+    Write-Host "  killport attack log        view attack history"
+    Write-Host "  killport fix <ip:port>     detect vulns and generate/apply a fix  (requires Ollama)"
     Write-Host ""
     exit 0
 }
