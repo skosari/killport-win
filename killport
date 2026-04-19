@@ -1304,7 +1304,7 @@ if [ $# -eq 0 ]; then
     echo "  v${VERSION}"
   fi
   echo ""
-  echo "  killport                   show this help and list listening ports"
+  echo "  killport                   show this help"
   echo "  killport <port>            kill whatever is running on that port"
   echo "  killport list              list all listening ports"
   echo "  killport open <port>       open a port to external connections"
