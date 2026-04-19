@@ -6,7 +6,7 @@ param(
     [Parameter(Mandatory=$false, Position=4)] [string]$Arg4
 )
 
-$VERSION = "1.10.18"
+$VERSION = "1.10.19"
 $REPO    = "skosari/killport-win"
 $RAW     = "https://raw.githubusercontent.com/$REPO/main"
 
@@ -71,21 +71,56 @@ function Write-Rule {
 
 function List-Ports {
     Write-Host ""
-    wh "  Listening Ports" Cyan
-    Write-Rule
+    Write-Host ("  {0,-7}  {1,-16}  {2,-24}  {3}" -f "PORT","PID(S)","ADDRESS","PROCESS") -ForegroundColor Blue
+    wh ("  {0,-7}  {1,-16}  {2,-24}  {3}" -f "───────","────────────────","────────────────────────","──────────────────────") DarkGray
     Write-Host ""
-    $seen = @{}
+
+    # group by port+host+process — deduplicate pids
+    $groups  = [System.Collections.Generic.Dictionary[string,object]]::new()
+    $order   = [System.Collections.Generic.List[string]]::new()
+
     netstat -ano | Select-String "LISTENING" | ForEach-Object {
-        $p = ($_ -split '\s+') | Where-Object { $_ -ne '' }
-        $addr = $p[1]; $procPid = $p[-1]
-        if ($seen["$addr-$procPid"]) { return }
-        $seen["$addr-$procPid"] = $true
-        try   { $name = (Get-Process -Id $procPid -ErrorAction Stop).Name }
-        catch { $name = "(unknown)" }
-        wh "  " -nl:$false; wh "●" Green -nl:$false
-        Write-Host ("  {0,-28} " -f $addr) -NoNewline
-        wh $name DarkGray
+        $p      = ($_ -split '\s+') | Where-Object { $_ -ne '' }
+        $full   = $p[1]          # e.g. 0.0.0.0:80 or [::]:80
+        $pid_   = $p[-1]
+
+        # split host and port
+        if ($full -match '^\[(.+)\]:(\d+)$') {
+            $host_ = "[$($Matches[1])]"; $port_ = [int]$Matches[2]
+        } elseif ($full -match '^(.+):(\d+)$') {
+            $host_ = $Matches[1]; $port_ = [int]$Matches[2]
+        } else { return }
+
+        if ($host_ -eq '0.0.0.0' -or $host_ -eq '[::]') { $host_ = '*' }
+
+        try   { $procName = (Get-Process -Id $pid_ -ErrorAction Stop).MainModule.ModuleName }
+        catch { try { $procName = (Get-Process -Id $pid_ -ErrorAction Stop).Name } catch { $procName = '-' } }
+        # strip .exe suffix
+        $procName = $procName -replace '\.exe$',''
+
+        $key = "$port_`t$host_`t$procName"
+        if (-not $groups.ContainsKey($key)) {
+            $groups[$key] = [PSCustomObject]@{ Port=$port_; Host=$host_; Name=$procName; Pids=[System.Collections.Generic.List[string]]::new() }
+            $order.Add($key) | Out-Null
+        }
+        if ($pid_ -notin $groups[$key].Pids) { $groups[$key].Pids.Add($pid_) | Out-Null }
     }
+
+    $count = 0
+    foreach ($key in ($order | Sort-Object { ($groups[$_]).Port })) {
+        $g = $groups[$key]
+        $n = $g.Pids.Count
+        if ($n -le 3) { $pidStr = $g.Pids -join ',' }
+        else          { $pidStr = "$($g.Pids[0]) (+$($n-1) more)" }
+        Write-Host ("  {0,-7}" -f $g.Port) -NoNewline -ForegroundColor Cyan
+        Write-Host ("  {0,-16}" -f $pidStr) -NoNewline -ForegroundColor DarkGray
+        Write-Host ("  {0,-24}" -f $g.Host)  -NoNewline -ForegroundColor DarkGray
+        Write-Host ("  {0}"     -f $g.Name)             -ForegroundColor White
+        $count++
+    }
+
+    Write-Host ""
+    wh "  $count service(s) listening" DarkGray
     Write-Host ""
 }
 
