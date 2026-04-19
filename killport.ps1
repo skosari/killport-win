@@ -6,7 +6,7 @@ param(
     [Parameter(Mandatory=$false, Position=4)] [string]$Arg4
 )
 
-$VERSION = "1.10.24"
+$VERSION = "1.10.25"
 $REPO    = "skosari/killport-win"
 $RAW     = "https://raw.githubusercontent.com/$REPO/main"
 
@@ -429,18 +429,75 @@ function Uninstall-Killport {
     if (-not $isAdmin) {
         wh "Re-run as Administrator: right-click PowerShell → Run as administrator" Yellow; exit 1
     }
+
+    Write-Host ""
+    wh "  killport uninstall" Cyan; Write-Rule; Write-Host ""
+
+    $dataFiles = @(
+        "$env:APPDATA\killport\ssh_known",
+        "$env:APPDATA\killport\wol_hosts",
+        "$env:APPDATA\killport\shutdown_hosts",
+        "$env:USERPROFILE\.killport\id_ed25519",
+        "$env:ProgramData\killport\attack.conf",
+        "$env:ProgramData\killport\attack.log"
+    ) | Where-Object { Test-Path $_ }
+
+    $keepData = $true
+    if ($dataFiles.Count -gt 0) {
+        wh "  Saved data found:" DarkGray
+        $dataFiles | ForEach-Object { wh "    $_" DarkGray }
+        Write-Host ""
+        wh "  Keep saved connections, hosts, and logs? " White -nl:$false
+        wh "[Y/n] " DarkGray -nl:$false
+        $ans = (Read-Host).Trim().ToLower()
+        if ($ans -eq 'n') { $keepData = $false }
+        Write-Host ""
+    }
+
     Write-Host "Uninstalling killport..."
+
     $rules = Get-NetFirewallRule -DisplayName "killport-*" -ErrorAction SilentlyContinue
     if ($rules) { $rules | Remove-NetFirewallRule; wh "  Removed $($rules.Count) firewall rule(s)" DarkGray }
+
     $bat = "$env:SystemRoot\System32\killport.bat"
     if (Test-Path $bat) { Remove-Item $bat -Force; wh "  Removed $bat" DarkGray }
+
     $impl = "$env:ProgramData\killport"
-    if (Test-Path $impl) { Remove-Item $impl -Recurse -Force; wh "  Removed $impl" DarkGray }
+    if (Test-Path $impl) {
+        if ($keepData) {
+            # remove only the script, leave config/logs
+            Remove-Item "$impl\killport.ps1" -Force -ErrorAction SilentlyContinue
+            wh "  Removed $impl\killport.ps1" DarkGray
+            wh "  Kept $impl (config + logs preserved)" DarkGray
+        } else {
+            Remove-Item $impl -Recurse -Force
+            wh "  Removed $impl" DarkGray
+        }
+    }
+
     @(
         "$env:USERPROFILE\AppData\Local\Microsoft\WindowsApps\killport.ps1",
         "$env:USERPROFILE\AppData\Local\Microsoft\WindowsApps\killport.bat"
     ) | Where-Object { Test-Path $_ } | ForEach-Object { Remove-Item $_ -Force; wh "  Removed $_" DarkGray }
-    wh "killport uninstalled." Green
+
+    if (-not $keepData) {
+        @(
+            "$env:APPDATA\killport",
+            "$env:USERPROFILE\.killport"
+        ) | Where-Object { Test-Path $_ } | ForEach-Object { Remove-Item $_ -Recurse -Force; wh "  Removed $_" DarkGray }
+    } else {
+        wh "  Kept $env:APPDATA\killport (SSH + WoL + shutdown hosts)" DarkGray
+        wh "  Kept $env:USERPROFILE\.killport (SSH keys)" DarkGray
+    }
+
+    Write-Host ""
+    if ($keepData) {
+        wh "killport uninstalled." Green
+        wh "Your data will be picked up automatically on next install." DarkGray
+    } else {
+        wh "killport uninstalled. No trace left." Green
+    }
+    Write-Host ""
 }
 
 # ── attack ───────────────────────────────────────────────────────────────────
