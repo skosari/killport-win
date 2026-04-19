@@ -6,7 +6,7 @@ param(
     [Parameter(Mandatory=$false, Position=4)] [string]$Arg4
 )
 
-$VERSION = "1.10.19"
+$VERSION = "1.10.20"
 $REPO    = "skosari/killport-win"
 $RAW     = "https://raw.githubusercontent.com/$REPO/main"
 
@@ -2067,6 +2067,199 @@ function Invoke-WolDispatch([string]$subcmd, [string]$arg1, [string]$arg2, [stri
     }
 }
 
+# ── SSH Easy Connect ─────────────────────────────────────────────────────────
+
+$SSH_KNOWN_FILE = "$env:APPDATA\killport\ssh_known"
+
+function Get-OurIp {
+    $ip = (Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue |
+           Where-Object { $_.IPAddress -notlike '127.*' -and $_.PrefixOrigin -ne 'WellKnown' } |
+           Sort-Object PrefixLength | Select-Object -First 1).IPAddress
+    if ($ip) { return $ip } else { return "<this-pc-ip>" }
+}
+
+function Get-SshKnown {
+    $list = @()
+    if (Test-Path $SSH_KNOWN_FILE) {
+        foreach ($line in (Get-Content $SSH_KNOWN_FILE)) {
+            if ($line -match '^\s*$' -or $line.StartsWith('#')) { continue }
+            $parts = $line -split '\|'
+            if ($parts.Count -ge 3) {
+                $list += [PSCustomObject]@{
+                    name = $parts[0]; user = $parts[1]
+                    ip   = $parts[2]; date = if ($parts.Count -ge 4) { $parts[3] } else { "" }
+                }
+            }
+        }
+    }
+    return $list
+}
+
+function Save-SshKnown([string]$name, [string]$user, [string]$ip) {
+    $dir = Split-Path $SSH_KNOWN_FILE
+    if (-not (Test-Path $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
+    $date = (Get-Date -Format "yyyy-MM-dd")
+    $existing = @()
+    if (Test-Path $SSH_KNOWN_FILE) {
+        $existing = Get-Content $SSH_KNOWN_FILE | Where-Object { $_ -notmatch "^\s*$" -and -not $_.StartsWith('#') -and ($_ -split '\|')[0] -ne $name }
+    }
+    $existing += "$name|$user|$ip|$date"
+    $existing | Set-Content $SSH_KNOWN_FILE
+}
+
+function Invoke-SshDispatch([string]$subcmd) {
+    $kpDir   = "$env:USERPROFILE\.killport"
+    $keyFile = "$kpDir\id_ed25519"
+    $pubFile = "$kpDir\id_ed25519.pub"
+
+    # ── list ──────────────────────────────────────────────────────────────────
+    if ($subcmd -eq 'list') {
+        Write-Host ""; wh "  SSH Easy Connect — Saved Keys" Cyan; Write-Rule; Write-Host ""
+        $known = Get-SshKnown
+        if ($known.Count -eq 0) {
+            wh "  No saved keys yet." DarkGray
+            wh "  Run 'killport ssh ks:<token>' to accept a connection." DarkGray
+            Write-Host ""; return
+        }
+        foreach ($e in $known) {
+            wh "  * " Green -nl:$false
+            wh ("{0,-20}" -f $e.name) White -nl:$false
+            wh ("  {0,-14}" -f $e.user) Cyan -nl:$false
+            wh ("  {0,-16}" -f $e.ip) DarkGray -nl:$false
+            wh "  $($e.date)" DarkGray
+        }
+        Write-Host ""
+        wh "  $($known.Count) connection(s) — 'killport ssh <name>' to connect" DarkGray
+        Write-Host ""; return
+    }
+
+    # ── accept (ks:token) ─────────────────────────────────────────────────────
+    if ($subcmd -like 'ks:*') {
+        $raw = $subcmd.Substring(3)
+        try {
+            $bytes   = [Convert]::FromBase64String($raw)
+            $json    = [Text.Encoding]::UTF8.GetString($bytes)
+            $data    = $json | ConvertFrom-Json
+            $rUser   = $data.user; $rIp = $data.ip; $rPubkey = $data.pubkey
+        } catch {
+            wh "`n  Invalid token (could not decode)." Red; Write-Host ""; exit 1
+        }
+        if (-not $rPubkey) { wh "`n  Invalid token (missing pubkey)." Red; Write-Host ""; exit 1 }
+
+        $sshDir   = "$env:USERPROFILE\.ssh"
+        $authKeys = "$sshDir\authorized_keys"
+        if (-not (Test-Path $sshDir)) { New-Item -ItemType Directory -Path $sshDir -Force | Out-Null }
+        if (-not (Test-Path $authKeys)) { New-Item -ItemType File -Path $authKeys -Force | Out-Null }
+
+        $existing = Get-Content $authKeys -ErrorAction SilentlyContinue
+        if ($existing -contains $rPubkey) {
+            wh "`n  Key already present in authorized_keys — no change." Yellow
+        } else {
+            Add-Content -Path $authKeys -Value "`n$rPubkey"
+            wh "`n  " -nl:$false; wh "Key added to $authKeys" Green
+        }
+        wh "  From: $rUser@$rIp" DarkGray; Write-Host ""
+
+        # advisory: check OpenSSH Server service
+        $svc = Get-Service -Name 'sshd' -ErrorAction SilentlyContinue
+        if (-not $svc -or $svc.Status -ne 'Running') {
+            wh "  OpenSSH Server not running." Yellow
+            wh "  Enable: Settings -> Apps -> Optional Features -> OpenSSH Server" DarkGray
+            wh "  Or run: Start-Service sshd" DarkGray
+            Write-Host ""
+        }
+
+        $ourIp   = Get-OurIp
+        $ourUser = $env:USERNAME
+        wh "  They can now connect with:" White
+        wh "  ssh -i ~/.killport/id_ed25519 $ourUser@$ourIp" Cyan
+        Write-Host ""
+
+        # ── save ──────────────────────────────────────────────────────────
+        $defaultName = $rUser
+        $known = Get-SshKnown
+        if ($known | Where-Object { $_.name -eq $defaultName }) {
+            $suffix = ($rIp -split '\.')[-1]
+            $defaultName = "$rUser-$suffix"
+        }
+        wh "  Save as [$defaultName]: " DarkGray -nl:$false
+        $saveName = Read-Host
+        if ([string]::IsNullOrWhiteSpace($saveName)) { $saveName = $defaultName }
+        Save-SshKnown $saveName $rUser $rIp
+        wh "  Saved as '$saveName'  —  killport ssh $saveName" Green
+        Write-Host ""
+
+        # ── return token so they can SSH back ─────────────────────────────
+        if (-not (Test-Path $kpDir)) { New-Item -ItemType Directory -Path $kpDir -Force | Out-Null }
+        if (-not (Test-Path $keyFile)) {
+            $sshKeygen = Get-CmdPath 'ssh-keygen'
+            if ($sshKeygen) {
+                & $sshKeygen -t ed25519 -f $keyFile -N '""' -C "killport@$env:COMPUTERNAME" 2>&1 | Out-Null
+            }
+        }
+        if (Test-Path $pubFile) {
+            $ourPubkey = (Get-Content $pubFile -Raw).Trim()
+            $obj       = [PSCustomObject]@{ user = $ourUser; ip = $ourIp; pubkey = $ourPubkey }
+            $ourJson   = $obj | ConvertTo-Json -Compress
+            $ourToken  = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($ourJson))
+            wh "  ──────────────────────────────────────────────────" DarkGray
+            wh "  To SSH back to this PC, run on their machine:" DarkGray
+            Write-Host ""
+            wh "  killport ssh ks:$ourToken" Cyan
+            Write-Host ""
+        }
+        return
+    }
+
+    # ── name lookup → connect ─────────────────────────────────────────────────
+    if ($subcmd) {
+        $known = Get-SshKnown
+        $entry = $known | Where-Object { $_.name -eq $subcmd } | Select-Object -First 1
+        if ($entry) {
+            wh "`n  Connecting to $subcmd ($($entry.user)@$($entry.ip))..." DarkGray
+            Write-Host ""
+            & ssh -i $keyFile "$($entry.user)@$($entry.ip)"
+            return
+        }
+        wh "`n  No saved connection named '$subcmd'." Red
+        wh "  Run 'killport ssh list' to see saved connections." DarkGray
+        Write-Host ""; exit 1
+    }
+
+    # ── generate mode ─────────────────────────────────────────────────────────
+    Write-Host ""; wh "  killport ssh — Key Exchange" Cyan; Write-Rule; Write-Host ""
+
+    if (-not (Test-Path $kpDir)) { New-Item -ItemType Directory -Path $kpDir -Force | Out-Null }
+
+    $sshKeygen = Get-CmdPath 'ssh-keygen'
+    if (-not $sshKeygen) {
+        wh "  ssh-keygen not found." Red
+        wh "  Install: Settings -> Apps -> Optional Features -> OpenSSH Client" DarkGray
+        Write-Host ""; exit 1
+    }
+
+    if (-not (Test-Path $keyFile)) {
+        wh "  Generating Ed25519 keypair..." DarkGray
+        & $sshKeygen -t ed25519 -f $keyFile -N '""' -C "killport@$env:COMPUTERNAME" 2>&1 | Out-Null
+        wh "  Created $keyFile" Green; Write-Host ""
+    } else {
+        wh "  Using existing key: $pubFile" DarkGray; Write-Host ""
+    }
+
+    $pubkey    = (Get-Content $pubFile -Raw).Trim()
+    $localUser = $env:USERNAME
+    $localIp   = Get-OurIp
+    $obj       = [PSCustomObject]@{ user = $localUser; ip = $localIp; pubkey = $pubkey }
+    $json      = $obj | ConvertTo-Json -Compress
+    $token     = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($json))
+
+    wh "  Run this on the other machine:" White; Write-Host ""
+    wh "  killport ssh ks:$token" Cyan; Write-Host ""
+    wh "  Then connect from this PC with:" DarkGray
+    wh "  ssh -i ~/.killport/id_ed25519 <their-user>@<their-ip>" Cyan; Write-Host ""
+    wh "  Your IP on this machine: $localIp" DarkGray; Write-Host ""
+}
+
 # ── main ─────────────────────────────────────────────────────────────────────
 
 if (-not $Command) {
@@ -2098,6 +2291,12 @@ if (-not $Command) {
     Write-Host "  killport dns <domain>      DNS recon: A/MX/TXT/NS/AXFR zone transfer test"
     Write-Host "  killport forward <p> <h:p> forward a local port to a remote host:port"
     Write-Host "  killport stress <ip:port>  authorized connection flood / stress test"
+    Write-Host ""
+    Write-Host "  *** SSH EASY CONNECT ***"
+    Write-Host "  killport ssh               generate a token so another machine can SSH in"
+    Write-Host "  killport ssh ks:<token>    accept a token — adds their key, enables SSH"
+    Write-Host "  killport ssh list          show all saved SSH connections"
+    Write-Host "  killport ssh <name>        ssh to a saved connection using your key"
     Write-Host ""
     Write-Host "  *** WAKE ON LAN ***"
     Write-Host "  killport wol               scan network and wake or save host"
@@ -2134,6 +2333,7 @@ switch ($Command.ToLower()) {
     "audit"       { Audit-Firewall }
     "dns"         { Invoke-DnsRecon $Port }
     "forward"     { Forward-Port $Port $Extra }
+    "ssh"         { Invoke-SshDispatch $Port }
     "wol"         { Invoke-WolDispatch $Port $Extra $Arg3 $Arg4 }
     "status"      { if (-not $Port) { Write-Host "Usage: killport status <port>" } else { Status-Port $Port } }
     "open"        { if (-not $Port) { Write-Host "Usage: killport open <port>" } else { Open-Port $Port } }

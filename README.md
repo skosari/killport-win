@@ -15,7 +15,7 @@ Also available for [macOS](https://github.com/skosari/killport-mac) and [Linux](
 
 AI-powered pentesting, vulnerability scanning, and automated hardening via [Ollama](https://ollama.com) — runs entirely on your hardware
 
-[![Version](https://img.shields.io/badge/version-1.10.19-00b4d8?style=flat-square)](#)
+[![Version](https://img.shields.io/badge/version-1.10.20-00b4d8?style=flat-square)](#)
 [![Platform](https://img.shields.io/badge/platform-Windows-00b4d8?style=flat-square&logo=windows&logoColor=white)](#)
 [![Shell](https://img.shields.io/badge/shell-PowerShell%20%2F%20CMD-00b4d8?style=flat-square&logo=powershell&logoColor=white)](#)
 [![License](https://img.shields.io/badge/license-Source%20Available-00b4d8?style=flat-square)](LICENSE)
@@ -73,6 +73,10 @@ Installs `killport.bat` to `System32` (always in PATH for CMD and PowerShell) an
 | `killport dns <domain>` | DNS recon: A/MX/TXT/NS/AXFR zone transfer test |
 | `killport forward <port> <host:port>` | Forward a local port to a remote host:port |
 | `killport stress <ip:port>` | Authorized connection flood / stress test |
+| `killport ssh` | Generate a token so another machine can SSH into this one |
+| `killport ssh ks:<token>` | Accept a token — adds their key and enables SSH access |
+| `killport ssh list` | Show all saved SSH connections |
+| `killport ssh <name>` | SSH to a saved connection using your key |
 | `killport wol` | Wake a LAN computer — scan network or pick a saved host |
 | `killport wol <name>` | Wake a saved host by name |
 | `killport wol save <name> <mac> [ip]` | Save a host for quick wake |
@@ -440,6 +444,62 @@ killport forward 8080 192.168.1.10:80
 killport stress 192.168.1.10:80    # authorized connection flood test
 ```
 
+### SSH Easy Connect → `killport ssh`
+
+Connect any two machines over SSH with a single copy-paste — no manual key copying, no `authorized_keys` editing. Works Windows↔Windows, Windows↔Mac, and Windows↔Linux.
+
+Requires **OpenSSH Client** and **OpenSSH Server** (both available as Optional Features in Windows 10/11 Settings → Apps → Optional Features).
+
+**On the machine you want to connect *from*:**
+
+```sh
+killport ssh
+```
+
+Generates an Ed25519 keypair at `%USERPROFILE%\.killport\id_ed25519` and outputs a token:
+
+```
+  killport ssh — Key Exchange
+  ────────────────────────────────────────────
+
+  Using existing key: C:\Users\sam\.killport\id_ed25519.pub
+
+  Run this on the other machine:
+
+  killport ssh ks:eyJ1c2VyIjoic2FtIiwiaXAiOiIxOTIuMTY4LjEuNDIiLCJwdWJrZXkiOiJzc2...
+
+  Then connect from this PC with:
+  ssh -i ~/.killport/id_ed25519 <their-user>@<their-ip>
+```
+
+**On the machine you want to connect *to*:**
+
+```sh
+killport ssh ks:<token>
+```
+
+```
+  Key added to C:\Users\sam\.ssh\authorized_keys
+  From: sam@192.168.1.42
+
+  They can now connect with:
+  ssh -i ~/.killport/id_ed25519 sam@192.168.1.55
+
+  Save as [sam]:
+  Saved as 'sam'  —  killport ssh sam
+
+  To SSH back to this PC, run on their machine:
+  killport ssh ks:<return-token>
+```
+
+**After setup — connect by name:**
+
+```sh
+killport ssh list      # see all saved connections
+killport ssh mini      # SSH straight into your Mac Mini
+killport ssh desktop   # SSH to your Windows desktop
+```
+
 ---
 
 ## AI Penetration Testing
@@ -490,6 +550,7 @@ killport attack log                     # view past attack reports
 
 ## Notes
 
+- `killport ssh` requires OpenSSH Client + Server — install via Settings → Apps → Optional Features
 - `killport open` / `killport close` manage Windows Firewall inbound rules — run as Administrator
 - `killport sniff` uses `pktmon` (Windows 10 1809+) — run as Administrator
 - `killport fix` generates PowerShell scripts; remote fix scripts can be deployed via `scp` + `ssh`
