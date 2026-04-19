@@ -2091,7 +2091,7 @@ switch ($Command.ToLower()) {
     "audit"       { Audit-Firewall }
     "dns"         { Invoke-DnsRecon $Port }
     "forward"     { Forward-Port $Port $Extra }
-    "wol"         { Invoke-WolDispatch ($Port ?? "") ($Extra ?? "") ($Arg3 ?? "") ($Arg4 ?? "") }
+    "wol"         { Invoke-WolDispatch $Port $Extra $Arg3 $Arg4 }
     "status"      { if (-not $Port) { Write-Host "Usage: killport status <port>" } else { Status-Port $Port } }
     "open"        { if (-not $Port) { Write-Host "Usage: killport open <port>" } else { Open-Port $Port } }
     "close"       { if (-not $Port) { Write-Host "Usage: killport close <port>" } else { Close-Port $Port } }
