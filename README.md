@@ -11,7 +11,7 @@
 
 **Kill whatever is running on a port — Windows**
 
-Also available for [macOS](https://github.com/skosari/killport-mac) and [Linux](https://github.com/skosari/killport-linux)
+Also available for [macOS](https://github.com/skosari/killport-mac) · [Linux](https://github.com/skosari/killport-linux) · [Windows CMD-only](https://github.com/skosari/killport-cmd)
 
 AI-powered pentesting, vulnerability scanning, and automated hardening via [Ollama](https://ollama.com) — runs entirely on your hardware
 
