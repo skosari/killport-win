@@ -1,10 +1,12 @@
 param(
     [Parameter(Mandatory=$false, Position=0)] [string]$Command,
     [Parameter(Mandatory=$false, Position=1)] [string]$Port,
-    [Parameter(Mandatory=$false, Position=2)] [string]$Extra
+    [Parameter(Mandatory=$false, Position=2)] [string]$Extra,
+    [Parameter(Mandatory=$false, Position=3)] [string]$Arg3,
+    [Parameter(Mandatory=$false, Position=4)] [string]$Arg4
 )
 
-$VERSION = "1.10.14"
+$VERSION = "1.10.15"
 $REPO    = "skosari/killport-win"
 $RAW     = "https://raw.githubusercontent.com/$REPO/main"
 
@@ -1799,6 +1801,235 @@ function Forward-Port($localPort, $target) {
     }
 }
 
+# ── Wake on LAN ──────────────────────────────────────────────────────────────
+
+$WOL_HOSTS_FILE = "$env:APPDATA\killport\wol_hosts"
+
+function Get-LocalSubnet {
+    try {
+        $ip = (Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue |
+               Where-Object { $_.IPAddress -notmatch '^(127\.|169\.254\.)' -and $_.PrefixOrigin -ne 'WellKnown' } |
+               Sort-Object { $_.InterfaceAlias -match 'Ethernet|Wi-Fi' } -Descending |
+               Select-Object -First 1).IPAddress
+        if (-not $ip) { return $null }
+        return ($ip -replace '\.\d+$', '')
+    } catch { return $null }
+}
+
+function Send-WolPacket([string]$mac, [string]$ip = "255.255.255.255") {
+    try {
+        $mac = $mac.ToLower() -replace '-', ':'
+        if ($mac -notmatch '^([0-9a-f]{2}:){5}[0-9a-f]{2}$') {
+            wh "  Invalid MAC address: $mac" Yellow; return $false
+        }
+        $macBytes = ($mac -split ':') | ForEach-Object { [Convert]::ToByte($_, 16) }
+        $magic = New-Object byte[] 102
+        for ($i = 0; $i -lt 6; $i++) { $magic[$i] = 0xFF }
+        for ($i = 0; $i -lt 16; $i++) {
+            for ($j = 0; $j -lt 6; $j++) { $magic[6 + $i * 6 + $j] = $macBytes[$j] }
+        }
+        $udp = New-Object System.Net.Sockets.UdpClient
+        $udp.EnableBroadcast = $true
+        $ep = New-Object System.Net.IPEndPoint([System.Net.IPAddress]::Broadcast, 9)
+        $udp.Send($magic, $magic.Length, $ep) | Out-Null
+        if ($ip -and $ip -ne "255.255.255.255") {
+            $ep2 = New-Object System.Net.IPEndPoint([System.Net.IPAddress]::Parse($ip), 9)
+            $udp.Send($magic, $magic.Length, $ep2) | Out-Null
+        }
+        $udp.Close()
+        return $true
+    } catch { return $false }
+}
+
+function Get-WolHosts {
+    $list = [System.Collections.Generic.List[string]]::new()
+    if (-not (Test-Path $WOL_HOSTS_FILE)) { return ,$list }
+    Get-Content $WOL_HOSTS_FILE | ForEach-Object {
+        $line = $_.Trim()
+        if ($line -and -not $line.StartsWith('#')) { $list.Add($line) }
+    }
+    return ,$list
+}
+
+function Save-WolHost([string]$name, [string]$mac, [string]$ip = "") {
+    $mac = $mac.ToLower() -replace '-', ':'
+    if ($mac -notmatch '^([0-9a-f]{2}:){5}[0-9a-f]{2}$') {
+        wh "  Invalid MAC: $mac" Yellow; return $false
+    }
+    $dir = Split-Path $WOL_HOSTS_FILE
+    if (-not (Test-Path $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
+    $existing = @()
+    if (Test-Path $WOL_HOSTS_FILE) {
+        $existing = @(Get-Content $WOL_HOSTS_FILE | Where-Object { $_ -and -not $_.StartsWith("$name ") })
+    }
+    $entry = "$name $mac"; if ($ip) { $entry += " $ip" }
+    ($existing + $entry) | Set-Content $WOL_HOSTS_FILE
+    return $true
+}
+
+function Invoke-WolDispatch([string]$subcmd, [string]$arg1, [string]$arg2, [string]$arg3) {
+    if ($subcmd -eq "" -or $subcmd.ToLower() -eq "scan") {
+        Write-Host ""
+        wh "  Wake on LAN" Cyan
+        Write-Host "  ────────────────────────────────────────────"
+        Write-Host ""
+
+        $saved = Get-WolHosts
+        $entries  = [System.Collections.Generic.List[hashtable]]::new()
+        $savedMacs = [System.Collections.Generic.List[string]]::new()
+        $idx = 0
+        foreach ($entry in $saved) {
+            $parts = $entry -split ' '
+            $n = $parts[0]; $m = $parts[1]
+            $ipv = if ($parts.Count -gt 2 -and $parts[2]) { $parts[2] } else { "" }
+            $idx++
+            $entries.Add(@{ mac=$m; ip=$ipv; name=$n })
+            $savedMacs.Add($m)
+            wh "  $($idx.ToString().PadLeft(2))" White -nl:$false
+            wh "  ★ " Green -nl:$false; wh $n.PadRight(22) White -nl:$false
+            wh "  $m" -nl:$false; wh "  $ipv" DarkGray
+        }
+        if ($saved.Count -gt 0) { Write-Host "" }
+
+        $base = Get-LocalSubnet
+        if (-not $base) { wh "  Could not determine local subnet." Yellow; Write-Host ""; return }
+        wh "  Scanning ${base}.0/24 ..." DarkGray; Write-Host ""
+
+        $pingObjs = [ordered]@{}
+        $pingTasks = [ordered]@{}
+        1..254 | ForEach-Object {
+            $ip_ = "${base}.$_"
+            $p = New-Object System.Net.NetworkInformation.Ping
+            $pingObjs[$ip_] = $p
+            $pingTasks[$ip_] = $p.SendPingAsync($ip_, 500)
+        }
+        foreach ($ip_ in $pingTasks.Keys) {
+            try {
+                if ($pingTasks[$ip_].GetAwaiter().GetResult().Status -eq 'Success') {
+                    $arpOut = (arp -a $ip_ 2>$null) -join "`n"
+                    if ($arpOut -match '([0-9a-f]{2}[-:][0-9a-f]{2}[-:][0-9a-f]{2}[-:][0-9a-f]{2}[-:][0-9a-f]{2}[-:][0-9a-f]{2})') {
+                        $rmac = $Matches[1].ToLower() -replace '-',':'
+                        if ($savedMacs -contains $rmac) { continue }
+                        $idx++
+                        $entries.Add(@{ mac=$rmac; ip=$ip_; name="?" })
+                        wh "  $($idx.ToString().PadLeft(2))" White -nl:$false
+                        Write-Host "  ?" -NoNewline; Write-Host ("".PadRight(24)) -NoNewline
+                        wh "  $ip_" Green -nl:$false; wh "  $rmac" DarkGray
+                    }
+                }
+            } catch {}
+            $pingObjs[$ip_].Dispose()
+        }
+        Write-Host ""
+
+        if ($entries.Count -eq 0) {
+            wh "  No hosts found." Yellow; Write-Host ""
+            wh "  Add a known host: killport wol save <name> <mac> [ip]" DarkGray
+            Write-Host ""; return
+        }
+
+        wh "  Enter number to wake, or 's <num> <name>' to save:" DarkGray
+        Write-Host -NoNewline "  -> "; $sel = Read-Host
+
+        if ($sel -match '^s\s+(\d+)\s+(.+)$') {
+            $sIdx = [int]$Matches[1]; $sName = $Matches[2].Trim()
+            if ($sIdx -ge 1 -and $sIdx -le $entries.Count) {
+                $e = $entries[$sIdx - 1]
+                Save-WolHost $sName $e.mac $e.ip | Out-Null
+                wh "  Saved as '$sName'. Waking now..." Green
+                $sel = $sIdx.ToString()
+            } else { wh "  Invalid number." Yellow; Write-Host ""; return }
+        }
+
+        if ($sel -match '^\d+$') {
+            $n = [int]$sel
+            if ($n -ge 1 -and $n -le $entries.Count) {
+                $e = $entries[$n - 1]
+                Write-Host ""
+                Write-Host "  Waking " -NoNewline; wh $e.name White
+                wh "  $($e.mac)" DarkGray -nl:$false
+                if ($e.ip) { wh "  $($e.ip)" DarkGray } else { Write-Host "" }
+                if (Send-WolPacket $e.mac $e.ip) { wh "  Magic packet sent." Green; Write-Host "" }
+                else { wh "  Failed to send magic packet." Red; Write-Host "" }
+            } else { wh "  Invalid number." Yellow; Write-Host "" }
+        } else { wh "  Cancelled." DarkGray; Write-Host "" }
+        return
+    }
+
+    switch ($subcmd.ToLower()) {
+        "save" {
+            if (-not $arg1 -or -not $arg2) {
+                Write-Host "  Usage: killport wol save <name> <mac> [ip]"; exit 1
+            }
+            if (Save-WolHost $arg1 $arg2 $arg3) {
+                wh "  Saved: " Green -nl:$false
+                Write-Host "$arg1  $($arg2.ToLower() -replace '-',':')"
+                Write-Host ""
+            }
+        }
+        { $_ -in "delete","remove" } {
+            if (-not $arg1) { Write-Host "  Usage: killport wol delete <name>"; exit 1 }
+            if (-not (Test-Path $WOL_HOSTS_FILE)) {
+                wh "  No saved hosts file found." Yellow; Write-Host ""; return
+            }
+            @(Get-Content $WOL_HOSTS_FILE | Where-Object { -not $_.StartsWith("$arg1 ") }) |
+                Set-Content $WOL_HOSTS_FILE
+            wh "  Removed: " Green -nl:$false; Write-Host $arg1; Write-Host ""
+        }
+        "list" {
+            $saved = Get-WolHosts
+            Write-Host ""; wh "  Saved WoL Hosts" Cyan
+            Write-Host "  ────────────────────────────────────────────"; Write-Host ""
+            if ($saved.Count -eq 0) {
+                wh "  None. Use 'killport wol save <name> <mac> [ip]' to add one." DarkGray
+                Write-Host ""; return
+            }
+            foreach ($entry in $saved) {
+                $parts = $entry -split ' '
+                $n = $parts[0]; $m = $parts[1]
+                $ipv = if ($parts.Count -gt 2 -and $parts[2]) { $parts[2] } else { "" }
+                wh "  ★ " Green -nl:$false; wh $n.PadRight(20) White -nl:$false
+                wh "  $m" -nl:$false; wh "  $ipv" DarkGray
+            }
+            Write-Host ""
+        }
+        default {
+            $saved = Get-WolHosts
+            $foundMac = $null; $foundIp = ""
+            foreach ($entry in $saved) {
+                $parts = $entry -split ' '
+                if ($parts[0] -eq $subcmd) {
+                    $foundMac = $parts[1]
+                    $foundIp  = if ($parts.Count -gt 2) { $parts[2] } else { "" }
+                }
+            }
+            if ($foundMac) {
+                Write-Host ""; Write-Host "  Waking " -NoNewline; wh $subcmd White
+                wh "  $foundMac" DarkGray -nl:$false
+                if ($foundIp) { wh "  $foundIp" DarkGray } else { Write-Host "" }
+                if (Send-WolPacket $foundMac $foundIp) { wh "  Magic packet sent." Green; Write-Host "" }
+                else { wh "  Failed to send magic packet." Red; Write-Host "" }
+                return
+            }
+            if ($subcmd -match '^([0-9a-fA-F]{2}[:-]){5}[0-9a-fA-F]{2}$') {
+                Write-Host ""; Write-Host "  Waking " -NoNewline; wh $subcmd White
+                if (Send-WolPacket $subcmd) { wh "  Magic packet sent." Green; Write-Host "" }
+                else { wh "  Failed to send magic packet." Red; Write-Host "" }
+                return
+            }
+            wh "  No saved host named '$subcmd'." Yellow
+            Write-Host "  Usage:"
+            Write-Host "    killport wol              scan network + pick a host to wake"
+            Write-Host "    killport wol <name>       wake a saved host by name"
+            Write-Host "    killport wol <mac>        wake by MAC address directly"
+            Write-Host "    killport wol save <name> <mac> [ip]"
+            Write-Host "    killport wol delete <name>"
+            Write-Host "    killport wol list"
+            Write-Host ""; exit 1
+        }
+    }
+}
+
 # ── main ─────────────────────────────────────────────────────────────────────
 
 if (-not $Command) {
@@ -1826,6 +2057,10 @@ if (-not $Command) {
     Write-Host "  killport dns <domain>      DNS recon: A/MX/TXT/NS/AXFR zone transfer test"
     Write-Host "  killport forward <p> <h:p> forward a local port to a remote host:port"
     Write-Host "  killport stress <ip:port>  authorized connection flood / stress test"
+    Write-Host "  killport wol               wake a LAN computer (scan network or use saved hosts)"
+    Write-Host "  killport wol <name>        wake a saved host by name"
+    Write-Host "  killport wol save <n> <mac> [ip]  save a host for quick wake"
+    Write-Host "  killport wol list          show saved WoL hosts"
     Write-Host "  killport update            update to the latest version"
     Write-Host "  killport uninstall         remove killport and all firewall rules"
     Write-Host ""
@@ -1856,6 +2091,7 @@ switch ($Command.ToLower()) {
     "audit"       { Audit-Firewall }
     "dns"         { Invoke-DnsRecon $Port }
     "forward"     { Forward-Port $Port $Extra }
+    "wol"         { Invoke-WolDispatch ($Port ?? "") ($Extra ?? "") ($Arg3 ?? "") ($Arg4 ?? "") }
     "status"      { if (-not $Port) { Write-Host "Usage: killport status <port>" } else { Status-Port $Port } }
     "open"        { if (-not $Port) { Write-Host "Usage: killport open <port>" } else { Open-Port $Port } }
     "close"       { if (-not $Port) { Write-Host "Usage: killport close <port>" } else { Close-Port $Port } }
