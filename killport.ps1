@@ -6,7 +6,7 @@ param(
     [Parameter(Mandatory=$false, Position=4)] [string]$Arg4
 )
 
-$VERSION = "1.10.16"
+$VERSION = "1.10.17"
 $REPO    = "skosari/killport-win"
 $RAW     = "https://raw.githubusercontent.com/$REPO/main"
 
@@ -352,10 +352,12 @@ function Update-Killport {
     if ((Compare-Version $remote $VERSION) -le 0) { wh "Already up to date (v$VERSION)" Green; exit 0 }
     Write-Host "Updating $VERSION " -NoNewline; wh "→" Yellow -nl:$false; Write-Host " $remote..."
 
+    $cb = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
+
     # Update bat wrapper in System32
     $batPath = (Get-Command killport -ErrorAction SilentlyContinue).Source
     if ($batPath -and $batPath.EndsWith('.bat')) {
-        $content = (Invoke-WebRequest -Uri "$RAW/killport.bat" -UseBasicParsing).Content
+        $content = (Invoke-WebRequest -Uri "$RAW/killport.bat?_=$cb" -UseBasicParsing).Content
         $content = $content -replace "`r`n","`n" -replace "`n","`r`n"
         [System.IO.File]::WriteAllText($batPath, $content, (New-Object System.Text.UTF8Encoding $False))
     }
@@ -363,7 +365,7 @@ function Update-Killport {
     # Update this ps1 implementation
     $ps1Path = $PSCommandPath
     if (-not $ps1Path) { $ps1Path = "C:\ProgramData\killport\killport.ps1" }
-    $content = (Invoke-WebRequest -Uri "$RAW/killport.ps1" -UseBasicParsing).Content
+    $content = (Invoke-WebRequest -Uri "$RAW/killport.ps1?_=$cb" -UseBasicParsing).Content
     [System.IO.File]::WriteAllText($ps1Path, $content, (New-Object System.Text.UTF8Encoding $True))
 
     wh "Updated to v$remote. Run killport to confirm." Green
