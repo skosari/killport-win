@@ -6,7 +6,7 @@ param(
     [Parameter(Mandatory=$false, Position=4)] [string]$Arg4
 )
 
-$VERSION = "1.10.20"
+$VERSION = "1.10.21"
 $REPO    = "skosari/killport-win"
 $RAW     = "https://raw.githubusercontent.com/$REPO/main"
 
@@ -2260,6 +2260,145 @@ function Invoke-SshDispatch([string]$subcmd) {
     wh "  Your IP on this machine: $localIp" DarkGray; Write-Host ""
 }
 
+# ── shutdown ─────────────────────────────────────────────────────────────────
+
+function Invoke-ShutdownDispatch([string]$subcmd) {
+    $kpDir    = "$env:APPDATA\killport"
+    $sdFile   = "$kpDir\shutdown_hosts"
+    $keyFile  = "$kpDir\id_ed25519"
+
+    function Get-SdKnown {
+        if (-not (Test-Path $sdFile)) { return @() }
+        Get-Content $sdFile | Where-Object { $_ -match '\S' } | ForEach-Object {
+            $parts = $_ -split '\|'
+            if ($parts.Count -ge 4) {
+                [PSCustomObject]@{ name=$parts[0]; os=$parts[1]; ip=$parts[2]; user=$parts[3]; date=if($parts.Count -ge 5){$parts[4]}else{''} }
+            }
+        }
+    }
+
+    function Save-SdKnown([string]$name, [string]$os, [string]$ip, [string]$user) {
+        if (-not (Test-Path $kpDir)) { New-Item -ItemType Directory -Path $kpDir -Force | Out-Null }
+        $date    = (Get-Date -Format 'yyyy-MM-dd')
+        $newLine = "$name|$os|$ip|$user|$date"
+        $lines   = @()
+        if (Test-Path $sdFile) {
+            $lines = Get-Content $sdFile | Where-Object { ($_ -split '\|')[0] -ne $name }
+        }
+        $lines += $newLine
+        $lines | Set-Content $sdFile
+    }
+
+    function Do-Shutdown([string]$os, [string]$ip, [string]$user) {
+        $cmd = if ($os -eq 'windows') { 'shutdown /s /t 0 /f' } else { 'sudo shutdown -h now' }
+        wh "`n  Sending shutdown to $user@$ip ($os)..." DarkGray
+        Write-Host ""
+        & ssh -i $keyFile -o StrictHostKeyChecking=no "$user@$ip" $cmd
+    }
+
+    # ── list mode ────────────────────────────────────────────────────────────
+    if ($subcmd -eq 'list') {
+        $known = Get-SdKnown
+        Write-Host ""; wh "  killport shutdown — Saved Hosts" Cyan; Write-Rule; Write-Host ""
+        if ($known.Count -eq 0) { wh "  No saved shutdown hosts." DarkGray; Write-Host ""; return }
+        wh ("  {0,-14} {1,-9} {2,-18} {3,-16} {4}" -f "NAME","OS","IP","USER","SAVED") Blue
+        wh ("  {0,-14} {1,-9} {2,-18} {3,-16} {4}" -f "──────────────","─────────","──────────────────","────────────────","──────────") DarkGray
+        foreach ($h in $known) {
+            Write-Host ("  {0,-14} {1,-9} {2,-18} {3,-16} {4}" -f $h.name,$h.os,$h.ip,$h.user,$h.date)
+        }
+        Write-Host ""; return
+    }
+
+    # ── name lookup ──────────────────────────────────────────────────────────
+    if ($subcmd -and $subcmd -notmatch '[\.\:]') {
+        $known = Get-SdKnown
+        $entry = $known | Where-Object { $_.name -eq $subcmd } | Select-Object -First 1
+        if ($entry) {
+            Do-Shutdown $entry.os $entry.ip $entry.user
+            return
+        }
+        wh "`n  No saved shutdown host named '$subcmd'." Red
+        wh "  Run 'killport shutdown list' to see saved hosts." DarkGray
+        Write-Host ""; exit 1
+    }
+
+    # ── no-arg: scan network and pick ────────────────────────────────────────
+    if (-not $subcmd) {
+        Write-Host ""; wh "  killport shutdown — Scan Network" Cyan; Write-Rule; Write-Host ""
+        $localIp = Get-OurIp
+        $base    = ($localIp -replace '\.\d+$', '')
+        wh "  Scanning $base.0/24..." DarkGray; Write-Host ""
+
+        $jobs = 1..254 | ForEach-Object { $i = $_; Start-Job -ScriptBlock { param($h) Test-Connection $h -Count 1 -Quiet } -ArgumentList "$base.$i" }
+        $null = $jobs | Wait-Job
+
+        $hosts = @()
+        foreach ($j in $jobs) {
+            $alive = Receive-Job $j
+            if ($alive) {
+                $ip = ($j.Command -replace '.*"([\d\.]+)".*','$1')
+                # get ip from job name workaround
+            }
+        }
+        Remove-Job $jobs
+
+        # Simpler: use arp after ping sweep
+        $liveHosts = @()
+        1..254 | ForEach-Object { $null = Test-Connection "$base.$_" -Count 1 -Quiet -AsJob }
+        Start-Sleep -Seconds 3
+        $arpOut = arp -a 2>$null
+        $count = 0
+        foreach ($line in $arpOut) {
+            if ($line -match "^\s+($([regex]::Escape($base))\.\d+)\s+") {
+                $ip = $Matches[1]
+                if ($ip -ne $localIp) {
+                    $count++
+                    $liveHosts += $ip
+                    wh ("  {0,3}  {1}" -f $count, $ip) Gray
+                }
+            }
+        }
+
+        if ($liveHosts.Count -eq 0) {
+            wh "  No hosts found on $base.0/24." DarkGray; Write-Host ""; return
+        }
+        Write-Host ""
+        $pick = (Read-Host "  Pick a number (1-$count)").Trim()
+        if (-not ($pick -match '^\d+$') -or [int]$pick -lt 1 -or [int]$pick -gt $count) {
+            wh "  Invalid selection." Red; Write-Host ""; exit 1
+        }
+        $subcmd = $liveHosts[[int]$pick - 1]
+        Write-Host ""
+    }
+
+    # ── IP mode ──────────────────────────────────────────────────────────────
+    $targetIp = $subcmd
+
+    Write-Host ""; wh "  killport shutdown — $targetIp" Cyan; Write-Rule; Write-Host ""
+    wh "  What OS is running on $targetIp?" White
+    wh "  [m] macOS    [l] Linux    [w] Windows" DarkGray
+    Write-Host ""
+    $osChoice = (Read-Host "  OS (m/l/w)").ToLower().Trim()
+    $osName   = switch ($osChoice) { 'm' { 'macos' } 'l' { 'linux' } 'w' { 'windows' } default { $osChoice } }
+    if ($osName -notin @('macos','linux','windows')) {
+        wh "  Invalid OS. Use m, l, or w." Red; Write-Host ""; exit 1
+    }
+
+    $defUser  = $env:USERNAME
+    $userInput = (Read-Host "  SSH username [$defUser]").Trim()
+    $sshUser   = if ($userInput) { $userInput } else { $defUser }
+
+    Do-Shutdown $osName $targetIp $sshUser
+
+    Write-Host ""
+    $saveName = (Read-Host "  Save as (leave blank to skip)").Trim()
+    if ($saveName) {
+        Save-SdKnown $saveName $osName $targetIp $sshUser
+        wh "  Saved as '$saveName'. Use: killport shutdown $saveName" Green
+    }
+    Write-Host ""
+}
+
 # ── main ─────────────────────────────────────────────────────────────────────
 
 if (-not $Command) {
@@ -2298,6 +2437,11 @@ if (-not $Command) {
     Write-Host "  killport ssh list          show all saved SSH connections"
     Write-Host "  killport ssh <name>        ssh to a saved connection using your key"
     Write-Host ""
+    Write-Host "  *** SHUTDOWN ***"
+    Write-Host "  killport shutdown <ip>     send shutdown signal to a remote machine"
+    Write-Host "  killport shutdown <name>   shut down a saved host by name"
+    Write-Host "  killport shutdown list     show all saved shutdown hosts"
+    Write-Host ""
     Write-Host "  *** WAKE ON LAN ***"
     Write-Host "  killport wol               scan network and wake or save host"
     Write-Host "  killport wol <name>        wake a saved host by name"
@@ -2334,6 +2478,7 @@ switch ($Command.ToLower()) {
     "dns"         { Invoke-DnsRecon $Port }
     "forward"     { Forward-Port $Port $Extra }
     "ssh"         { Invoke-SshDispatch $Port }
+    "shutdown"    { Invoke-ShutdownDispatch $Port }
     "wol"         { Invoke-WolDispatch $Port $Extra $Arg3 $Arg4 }
     "status"      { if (-not $Port) { Write-Host "Usage: killport status <port>" } else { Status-Port $Port } }
     "open"        { if (-not $Port) { Write-Host "Usage: killport open <port>" } else { Open-Port $Port } }
