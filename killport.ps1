@@ -6,7 +6,7 @@ param(
     [Parameter(Mandatory=$false, Position=4)] [string]$Arg4
 )
 
-$VERSION = "1.10.22"
+$VERSION = "1.10.23"
 $REPO    = "skosari/killport-win"
 $RAW     = "https://raw.githubusercontent.com/$REPO/main"
 
@@ -2289,11 +2289,44 @@ function Invoke-ShutdownDispatch([string]$subcmd) {
         $lines | Set-Content $sdFile
     }
 
-    function Do-Shutdown([string]$os, [string]$ip, [string]$user) {
-        $cmd = if ($os -eq 'windows') { 'shutdown /s /t 0 /f' } else { 'sudo shutdown -h now' }
-        wh "`n  Sending shutdown to $user@$ip ($os)..." DarkGray
+    function Ensure-SdKey {
+        if (-not (Test-Path $keyFile)) {
+            wh "  No SSH key found — generating one..." DarkGray
+            if (-not (Test-Path $kpDir)) { New-Item -ItemType Directory -Path $kpDir -Force | Out-Null }
+            $kg = Get-CmdPath 'ssh-keygen'
+            if (-not $kg) { wh "  ssh-keygen not found. Install OpenSSH Client from Windows Optional Features." Red; exit 1 }
+            & $kg -t ed25519 -f $keyFile -N '""' -C "killport@$env:COMPUTERNAME" 2>&1 | Out-Null
+            wh "  SSH key created: $keyFile" Green; Write-Host ""
+        }
+    }
+
+    function Show-SdToken([string]$ip, [string]$user) {
+        $pubFile = "$keyFile.pub"
+        $ourUser = $env:USERNAME
+        $ourIp   = Get-OurIp
+        $ourPub  = (Get-Content $pubFile -Raw).Trim()
+        $obj     = [PSCustomObject]@{ user=$ourUser; ip=$ourIp; pubkey=$ourPub }
+        $json    = $obj | ConvertTo-Json -Compress
+        $token   = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($json))
+        wh "  SSH key not yet authorized on that machine." Yellow; Write-Host ""
+        wh "  Run this on $ip (as $user) to authorize this machine:" DarkGray; Write-Host ""
+        wh "  killport ssh ks:$token" Cyan; Write-Host ""
+        Read-Host "  Press Enter when done" | Out-Null
         Write-Host ""
-        & ssh -i $keyFile -o StrictHostKeyChecking=no "$user@$ip" $cmd
+    }
+
+    function Do-Shutdown([string]$os, [string]$ip, [string]$user) {
+        Ensure-SdKey
+        $cmd = if ($os -eq 'windows') { 'shutdown /s /t 0 /f' } else { 'sudo shutdown -h now' }
+        wh "`n  Sending shutdown to $user@$ip ($os)..." DarkGray; Write-Host ""
+        $result = & ssh -i $keyFile -o StrictHostKeyChecking=no -o BatchMode=yes -o ConnectTimeout=5 "$user@$ip" $cmd 2>&1
+        if ($LASTEXITCODE -ne 0 -and ($result -match 'Permission denied|publickey|authentication')) {
+            Show-SdToken $ip $user
+            wh "  Retrying..." DarkGray; Write-Host ""
+            & ssh -i $keyFile -o StrictHostKeyChecking=no -o ConnectTimeout=5 "$user@$ip" $cmd 2>&1 | ForEach-Object { "  $_" }
+        } elseif ($result) {
+            $result | ForEach-Object { "  $_" }
+        }
     }
 
     # ── list mode ────────────────────────────────────────────────────────────
