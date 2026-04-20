@@ -9,7 +9,7 @@
 ╚═╝  ╚═╝╚═╝╚══════╝╚══════╝╚═╝      ╚═════╝ ╚═╝  ╚═╝   ╚═╝   
 </pre>
 
-**Kill whatever is running on a port — Windows**
+**Kill ports · manage firewall · SSH easy connect · Wake on LAN · remote shutdown · network scanning — Windows**
 
 Also available for [macOS](https://github.com/skosari/killport-mac) · [Linux](https://github.com/skosari/killport-linux) · [Windows CMD-only](https://github.com/skosari/killport-cmd)
 
