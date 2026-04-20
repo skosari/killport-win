@@ -6,7 +6,7 @@ param(
     [Parameter(Mandatory=$false, Position=4)] [string]$Arg4
 )
 
-$VERSION = "1.10.28"
+$VERSION = "1.10.29"
 $REPO    = "skosari/killport-win"
 $RAW     = "https://raw.githubusercontent.com/$REPO/main"
 
@@ -2547,6 +2547,291 @@ function Invoke-ShutdownDispatch([string]$subcmd) {
     Write-Host ""
 }
 
+# ── Setup Wizard ─────────────────────────────────────────────────────────────
+
+function Invoke-SetupWizard {
+    $conf = Get-AttackConf
+    $setupDone = @()
+    $score = 0
+
+    Write-Host ""
+    wh "  ╔══════════════════════════════════════════════════════════╗" Cyan
+    wh "  ║       killport · Pro Setup Wizard (Windows)              ║" Cyan
+    wh "  ╚══════════════════════════════════════════════════════════╝" Cyan
+    Write-Host ""
+    wh "  Configures: Ollama AI  ·  SSH (OpenSSH)  ·  Required tools" DarkGray
+    Write-Host ""
+    wh "  Press Enter to skip any step. Ctrl+C to quit anytime." DarkGray
+    Write-Host ""
+    Write-Host "  Press Enter to begin -> " -NoNewline; Read-Host | Out-Null
+
+    # ── Step 1: Ollama ───────────────────────────────────────────────────────
+    Write-Host ""
+    wh "  ┌─ Step 1 of 3 · Ollama AI ──────────────────────────────────┐" Cyan
+    Write-Host ""
+    wh "  Ollama powers killport attack, fix, and AI features." DarkGray
+    Write-Host ""
+
+    $hostUrl = $conf.ollama_host
+    if ($hostUrl -notmatch '^https?://') { $hostUrl = "http://$hostUrl" }
+    try {
+        $resp = Invoke-WebRequest -Uri "$hostUrl/api/tags" -UseBasicParsing -TimeoutSec 4 -ErrorAction Stop
+        $tags = ($resp.Content | ConvertFrom-Json).models
+        $modelNames = if ($tags) { @($tags | ForEach-Object { $_.name }) } else { @() }
+        wh "  ✓ Ollama reachable at $hostUrl" Green
+        if ($modelNames.Count -gt 0) {
+            wh "  Models: $($modelNames -join ', ')" DarkGray
+            wh "  Active: $(if ($conf.model) { $conf.model } else { 'auto' })" DarkGray
+            Write-Host ""
+            $setupDone += "Ollama · $hostUrl · model: $(if ($conf.model) { $conf.model } else { 'auto' })"
+            $score++
+        } else {
+            wh "  ⚠  No models loaded. Run: ollama pull llama3.2" Yellow
+            Write-Host ""
+        }
+        Write-Host "  Change Ollama host or model? [y/N] -> " -NoNewline
+        $ch = Read-Host
+        if ($ch -match '^[Yy]$') { Invoke-AttackConfig; $conf = Get-AttackConf }
+    } catch {
+        wh "  ⚠  Ollama not found at $hostUrl" Yellow
+        Write-Host ""
+        wh "  Install: https://ollama.com  then: ollama serve" DarkGray
+        wh "  Or enter a different host (another machine on your LAN):" DarkGray
+        Write-Host ""
+        Write-Host "  Enter Ollama host or press Enter to skip -> " -NoNewline
+        $h = Read-Host
+        if ($h) {
+            $testUrl = if ($h -match '^https?://') { $h } else { "http://$h" }
+            try {
+                Invoke-WebRequest -Uri "$testUrl/api/tags" -UseBasicParsing -TimeoutSec 4 -ErrorAction Stop | Out-Null
+                $conf.ollama_host = $testUrl; Save-AttackConf $conf
+                $score++
+                $setupDone += "Ollama · $testUrl"
+                wh "  ✓ Connected and saved." Green
+                Write-Host ""
+            } catch {
+                wh "  ✗ Could not reach Ollama at $testUrl — skipping." Red
+                Write-Host ""
+            }
+        } else {
+            wh "  Skipped. Configure later: killport config" DarkGray
+            Write-Host ""
+        }
+    }
+
+    # ── Step 2: SSH / OpenSSH ────────────────────────────────────────────────
+    Write-Host ""
+    wh "  ┌─ Step 2 of 3 · SSH / OpenSSH ──────────────────────────────┐" Cyan
+    Write-Host ""
+    wh "  killport uses OpenSSH for remote shutdown and SSH connections." DarkGray
+    Write-Host ""
+
+    $sshPath = Get-CmdPath "ssh"
+    $sshdSvc  = Get-Service sshd -ErrorAction SilentlyContinue
+
+    if ($sshPath) {
+        wh "  ✓ OpenSSH client found: $sshPath" Green
+        $score++; $setupDone += "SSH client · $sshPath"
+    } else {
+        wh "  ✗ OpenSSH client not found." Yellow
+        Write-Host "  Install OpenSSH client now? [Y/n] -> " -NoNewline
+        $inst = Read-Host
+        if ($inst -notmatch '^[Nn]$') {
+            Add-WindowsCapability -Online -Name OpenSSH.Client~~~~0.0.1.0 2>$null | Out-Null
+            wh "  ✓ OpenSSH client installed." Green
+            $score++; $setupDone += "SSH client · installed"
+        }
+    }
+    Write-Host ""
+
+    if ($sshdSvc -and $sshdSvc.Status -eq 'Running') {
+        wh "  ✓ OpenSSH server (sshd) is running — this machine accepts SSH." Green
+        Write-Host ""
+    } else {
+        Write-Host "  Enable OpenSSH server so other machines can SSH in? [y/N] -> " -NoNewline
+        $enableSshd = Read-Host
+        if ($enableSshd -match '^[Yy]$') {
+            try {
+                Add-WindowsCapability -Online -Name OpenSSH.Server~~~~0.0.1.0 2>$null | Out-Null
+                Start-Service sshd -ErrorAction Stop
+                Set-Service -Name sshd -StartupType Automatic
+                wh "  ✓ sshd started and set to auto-start." Green
+                $score++; $setupDone += "sshd · enabled + auto-start"
+            } catch {
+                wh "  ✗ Failed to start sshd: $_" Red
+            }
+            Write-Host ""
+        }
+    }
+
+    $fw22 = Get-NetFirewallRule -DisplayName "OpenSSH*" -ErrorAction SilentlyContinue |
+            Where-Object { $_.Enabled -eq 'True' } | Select-Object -First 1
+    if ($fw22) {
+        wh "  ✓ Firewall allows port 22 (rule: $($fw22.DisplayName))" Green
+    } else {
+        Write-Host "  Open firewall port 22 for SSH? [y/N] -> " -NoNewline
+        $fw = Read-Host
+        if ($fw -match '^[Yy]$') {
+            New-NetFirewallRule -DisplayName "OpenSSH SSH Server (sshd)" -Direction Inbound `
+                -Protocol TCP -LocalPort 22 -Action Allow -ErrorAction SilentlyContinue | Out-Null
+            wh "  ✓ Firewall rule added for port 22." Green
+            $score++; $setupDone += "Firewall · port 22 opened"
+        }
+    }
+    Write-Host ""
+
+    # ── Step 3: Tools check ──────────────────────────────────────────────────
+    Write-Host ""
+    wh "  ┌─ Step 3 of 3 · Required Tools ─────────────────────────────┐" Cyan
+    Write-Host ""
+    wh "  killport works best with nmap for scanning." DarkGray
+    Write-Host ""
+
+    $nmapPath = Get-CmdPath "nmap"
+    if ($nmapPath) {
+        wh "  ✓ nmap found: $nmapPath" Green
+        $score++; $setupDone += "nmap · found"
+    } else {
+        wh "  ✗ nmap not found (needed for killport attack + vuln)." Yellow
+        wh "  Install from: https://nmap.org/download.html" DarkGray
+        wh "  Or if you have winget: winget install nmap" DarkGray
+        Write-Host "  Try installing via winget now? [y/N] -> " -NoNewline
+        $instNmap = Read-Host
+        if ($instNmap -match '^[Yy]$') {
+            $wg = Get-CmdPath "winget"
+            if ($wg) {
+                & winget install --id Insecure.Nmap -e --accept-source-agreements --accept-package-agreements
+                wh "  ✓ nmap installation started." Green
+                $score++; $setupDone += "nmap · installed via winget"
+            } else {
+                wh "  winget not available. Download nmap from https://nmap.org" Yellow
+            }
+        }
+    }
+    Write-Host ""
+
+    # ── Summary ───────────────────────────────────────────────────────────────
+    Write-Host ""
+    wh "  ┌─ Setup Complete ────────────────────────────────────────────┐" Cyan
+    Write-Host ""
+    if ($setupDone.Count -gt 0) {
+        wh "  Configured ($score item(s)):" Green
+        Write-Host ""
+        $setupDone | ForEach-Object { wh "    ✓  $_" Green }
+        Write-Host ""
+    } else {
+        wh "  Nothing new configured. Run 'killport setup' anytime." DarkGray
+        Write-Host ""
+    }
+
+    wh "  Quick reference:" DarkGray
+    Write-Host ""
+    Write-Host "    "; wh "killport attack <ip>" Cyan -nl:$false; wh "    AI pentest (requires Ollama)" DarkGray
+    Write-Host "    "; wh "killport scan <ip>  " Cyan -nl:$false; wh "    port scan" DarkGray
+    Write-Host "    "; wh "killport shutdown <ip>" Cyan -nl:$false; wh "  shut down a remote machine" DarkGray
+    Write-Host "    "; wh "killport restart <ip> " Cyan -nl:$false; wh "  restart a remote machine" DarkGray
+    Write-Host "    "; wh "killport audit      " Cyan -nl:$false; wh "    firewall review" DarkGray
+    Write-Host "    "; wh "killport config     " Cyan -nl:$false; wh "    configure Ollama" DarkGray
+    Write-Host "    "; wh "killport setup      " Cyan -nl:$false; wh "    re-run this wizard" DarkGray
+    Write-Host ""
+
+    wh "  Done.  Run 'killport setup' anytime to update your configuration." DarkGray
+    Write-Host ""
+}
+
+# ── Restart Dispatch ──────────────────────────────────────────────────────────
+
+function Invoke-RestartDispatch([string]$subcmd) {
+    $kpDir  = "$env:APPDATA\killport"
+    $sdFile = "$kpDir\shutdown_hosts"
+    $keyFile = "$kpDir\id_ed25519"
+
+    function Get-RdKnown {
+        if (-not (Test-Path $sdFile)) { return @() }
+        Get-Content $sdFile | Where-Object { $_ -match '\S' -and $_ -notmatch '^#' }
+    }
+
+    function Invoke-RdRestart([string]$os, [string]$ip, [string]$user) {
+        $cmd = switch ($os.ToLower()) {
+            "mac"     { "sudo shutdown -r now" }
+            "linux"   { "sudo shutdown -r now" }
+            "windows" { "shutdown /r /t 0 /f" }
+            default   { "sudo shutdown -r now" }
+        }
+        wh "  Sending restart to ${user}@${ip} ($os)..." DarkGray
+        Write-Host ""
+        $sshExe = Get-CmdPath "ssh"
+        if (-not $sshExe) { wh "  ssh not found. Install OpenSSH client first." Red; return }
+        & $sshExe -i $keyFile -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new `
+            -o BatchMode=yes "${user}@${ip}" $cmd 2>&1 | ForEach-Object { Write-Host "  $_" }
+        if ($LASTEXITCODE -eq 0) {
+            wh "  ✓ Restart sent to $ip" Green
+        } else {
+            wh "  ✗ Could not reach $ip. Check SSH key setup: killport ssh" Red
+        }
+        Write-Host ""
+    }
+
+    switch ($subcmd.ToLower()) {
+        "list" {
+            Write-Host ""
+            wh "  Saved Shutdown/Restart Hosts" Cyan
+            Write-Host ""
+            $rows = Get-RdKnown
+            if ($rows.Count -eq 0) { wh "  No saved hosts. Add one with: killport restart <ip>" DarkGray; Write-Host ""; return }
+            wh ("  {0,-16}  {1,-8}  {2,-18}  {3}" -f "NAME","OS","IP","USER") DarkGray
+            Write-Host "  ────────────────────────────────────────────────"
+            foreach ($row in $rows) {
+                $parts = $row -split '\|'
+                if ($parts.Count -ge 4) {
+                    Write-Host ("  {0,-16}  {1,-8}  {2,-18}  {3}" -f $parts[0],$parts[1],$parts[2],$parts[3])
+                }
+            }
+            Write-Host ""
+            return
+        }
+        "" {
+            Write-Host ""
+            wh "  Remote Restart" Cyan
+            Write-Host ""
+            Write-Host "  Enter IP of machine to restart -> " -NoNewline
+            $ip = Read-Host
+            if (-not $ip) { wh "  Cancelled." DarkGray; Write-Host ""; return }
+            Write-Host "  OS (mac/linux/windows) [linux] -> " -NoNewline
+            $os = Read-Host; if (-not $os) { $os = "linux" }
+            Write-Host "  Username on ${ip} [$env:USERNAME] -> " -NoNewline
+            $user = Read-Host; if (-not $user) { $user = $env:USERNAME }
+            Write-Host ""
+            Invoke-RdRestart $os $ip $user
+            return
+        }
+    }
+
+    # Named host lookup
+    $rows = Get-RdKnown
+    foreach ($row in $rows) {
+        $parts = $row -split '\|'
+        if ($parts.Count -ge 4 -and $parts[0] -eq $subcmd) {
+            Write-Host ""
+            wh "  Remote Restart  ->  $($parts[0])  ($($parts[2]))" Cyan
+            Write-Host ""
+            Invoke-RdRestart $parts[1] $parts[2] $parts[3]
+            return
+        }
+    }
+
+    # Treat as IP
+    Write-Host ""
+    wh "  Remote Restart  ->  $subcmd" Cyan
+    Write-Host ""
+    Write-Host "  OS (mac/linux/windows) [linux] -> " -NoNewline
+    $os = Read-Host; if (-not $os) { $os = "linux" }
+    Write-Host "  Username on ${subcmd} [$env:USERNAME] -> " -NoNewline
+    $user = Read-Host; if (-not $user) { $user = $env:USERNAME }
+    Write-Host ""
+    Invoke-RdRestart $os $subcmd $user
+}
+
 # ── main ─────────────────────────────────────────────────────────────────────
 
 if (-not $Command) {
@@ -2593,11 +2878,16 @@ if (-not $Command) {
     Write-Host "  killport wol save <n> <mac> [ip]  save a host for quick wake"
     Write-Host "  killport wol list          show saved WoL hosts"
     Write-Host ""
-    Write-Host "  *** SHUTDOWN ***"
+    Write-Host "  *** SHUTDOWN & RESTART ***"
+    Write-Host "  killport setup             interactive pro setup wizard (Ollama, SSH, tools)"
     Write-Host "  killport shutdown          scan network and pick a machine to shut down"
     Write-Host "  killport shutdown <ip>     shut down a remote machine via SSH"
     Write-Host "  killport shutdown <name>   shut down a saved host by name"
     Write-Host "  killport shutdown list     show all saved shutdown hosts"
+    Write-Host "  killport restart           scan network and pick a machine to restart"
+    Write-Host "  killport restart <ip>      restart a remote machine via SSH"
+    Write-Host "  killport restart <name>    restart a saved host by name"
+    Write-Host "  killport restart list      show all saved shutdown/restart hosts"
     Write-Host ""
     Write-Host "  *** TRAFFIC MONITORING ***"
     Write-Host "  killport watch <port>        Monitor live connections to a local port"
@@ -2638,7 +2928,9 @@ switch ($Command.ToLower()) {
     "dns"         { Invoke-DnsRecon $Port }
     "forward"     { Forward-Port $Port $Extra }
     "ssh"         { Invoke-SshDispatch $Port }
+    "setup"       { Invoke-SetupWizard }
     "shutdown"    { Invoke-ShutdownDispatch $Port }
+    "restart"     { Invoke-RestartDispatch $Port }
     "wol"         { Invoke-WolDispatch $Port $Extra $Arg3 $Arg4 }
     "status"      { if (-not $Port) { Write-Host "Usage: killport status <port>" } else { Status-Port $Port } }
     "open"        { if (-not $Port) { Write-Host "Usage: killport open <port>" } else { Open-Port $Port } }
