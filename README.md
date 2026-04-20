@@ -49,47 +49,47 @@ Installs `killport.bat` to `System32` (always in PATH for CMD and PowerShell) an
 | Command | Description |
 |---|---|
 | `killport` | Show help |
-| `killport config` | Configure Ollama host and model |
-| `killport update` | Update to the latest version |
-| `killport uninstall` | Remove killport and all firewall rules |
 | `killport <port>` | Kill whatever is running on that port |
-| `killport ports` | Inspect all ports with firewall status |
-| `killport status <port>` | Show if a port is open or closed |
+| `killport attack <ip>` | AI pentest: scan all ports + analysis (requires Ollama) |
+| `killport attack <ip>:<port>` | AI pentest: single port deep dive (requires Ollama) |
+| `killport attack allports <ip>` | AI pentest: scan all 65535 ports (requires Ollama) |
+| `killport attack log` | View attack history |
+| `killport audit` | Review firewall rules with plain-English findings |
+| `killport cert <host:port>` | Inspect TLS certificate (expiry, SANs, cipher) |
+| `killport close <port>` | Close a port from external connections |
+| `killport closedports` | Show all listening ports with no external access |
+| `killport config` | Configure Ollama host and model |
+| `killport dns <domain>` | DNS recon: A/MX/TXT/NS/AXFR zone transfer test |
+| `killport fix <ip:port>` | Detect vulns and generate/apply a hardening fix (requires Ollama) |
+| `killport forward <port> <host:port>` | Forward a local port to a remote host:port |
+| `killport ip` | Show IP addresses, DNS, and network info |
 | `killport list` | List all listening ports |
 | `killport open <port>` | Open a port through Windows Firewall |
 | `killport openports` | Show all ports open to external access |
 | `killport openports <ip>` | Probe an IP to verify which ports are reachable |
-| `killport close <port>` | Close a port from external connections |
-| `killport closedports` | Show all listening ports with no external access |
-| `killport ip` | Show IP addresses, DNS, and network info |
-| `killport scan <ip>` | Scan ports on a remote host (no AI) |
+| `killport ports` | Inspect all ports with firewall status |
+| `killport scan <ip>` | Scan ports on a remote host |
 | `killport scan <ip> all` | Scan all 65535 ports on a remote host |
-| `killport watch <port>` | Monitor live connections to a local port |
-| `killport cert <host:port>` | Inspect TLS certificate (expiry, SANs, cipher) |
-| `killport sniff <port>` | Capture and display traffic on a port (pktmon) |
-| `killport sniff <ip:port>` | Capture traffic to/from a specific host:port |
-| `killport vuln <ip:port>` | Detect service version + query CVE database |
-| `killport audit` | Review firewall rules with plain-English findings |
-| `killport dns <domain>` | DNS recon: A/MX/TXT/NS/AXFR zone transfer test |
-| `killport forward <port> <host:port>` | Forward a local port to a remote host:port |
-| `killport stress <ip:port>` | Authorized connection flood / stress test |
-| `killport ssh` | Generate a token so another machine can SSH into this one |
-| `killport ssh ks:<token>` | Accept a token — adds their key and enables SSH access |
-| `killport ssh list` | Show all saved SSH connections |
-| `killport ssh <name>` | SSH to a saved connection using your key |
 | `killport shutdown` | Scan network and pick a machine to shut down |
 | `killport shutdown <ip>` | Send a shutdown signal to a remote machine via SSH |
 | `killport shutdown <name>` | Shut down a saved host by name |
 | `killport shutdown list` | Show all saved shutdown hosts |
+| `killport sniff <ip:port>` | Capture traffic to/from a specific host:port |
+| `killport sniff <port>` | Capture and display traffic on a port (pktmon) |
+| `killport ssh` | Generate a token so another machine can SSH into this one |
+| `killport ssh <name>` | SSH to a saved connection using your key |
+| `killport ssh ks:<token>` | Accept a token — adds their key and enables SSH access |
+| `killport ssh list` | Show all saved SSH connections |
+| `killport status <port>` | Show if a port is open or closed |
+| `killport stress <ip:port>` | Authorized connection flood / stress test |
+| `killport uninstall` | Remove killport and all firewall rules |
+| `killport update` | Update to the latest version |
+| `killport vuln <ip:port>` | Detect service version + query CVE database |
+| `killport watch <port>` | Monitor live connections to a local port |
 | `killport wol` | Wake a LAN computer — scan network or pick a saved host |
 | `killport wol <name>` | Wake a saved host by name |
-| `killport wol save <name> <mac> [ip]` | Save a host for quick wake |
 | `killport wol list` | Show all saved WoL hosts |
-| `killport attack <ip>` | AI pentest: scan all ports + analysis (requires Ollama) |
-| `killport attack allports <ip>` | AI pentest: scan all 65535 ports (requires Ollama) |
-| `killport attack <ip>:<port>` | AI pentest: single port deep dive (requires Ollama) |
-| `killport attack log` | View attack history |
-| `killport fix <ip:port>` | Detect vulns and generate/apply a hardening fix (requires Ollama) |
+| `killport wol save <name> <mac> [ip]` | Save a host for quick wake |
 
 ---
 
