@@ -6,7 +6,7 @@ param(
     [Parameter(Mandatory=$false, Position=4)] [string]$Arg4
 )
 
-$VERSION = "1.10.27"
+$VERSION = "1.10.28"
 $REPO    = "skosari/killport-win"
 $RAW     = "https://raw.githubusercontent.com/$REPO/main"
 
@@ -2422,15 +2422,30 @@ function Invoke-ShutdownDispatch([string]$subcmd) {
         Write-Host ""
     }
 
+    function Test-SdHostTrusted([string]$ip, [string]$user) {
+        if (-not (Test-Path $SSH_KNOWN_FILE)) { return $false }
+        foreach ($line in (Get-Content $SSH_KNOWN_FILE)) {
+            $parts = $line -split '\|'
+            if ($parts.Count -ge 3 -and $parts[2] -eq $ip -and $parts[1] -eq $user) { return $true }
+        }
+        return $false
+    }
+
     function Do-Shutdown([string]$os, [string]$ip, [string]$user) {
         Ensure-SdKey
         $cmd = if ($os -eq 'windows') { 'shutdown /s /t 0 /f' } else { 'sudo shutdown -h now' }
         wh "`n  Sending shutdown to $user@$ip ($os)..." DarkGray; Write-Host ""
         $result = & ssh -i $keyFile -o StrictHostKeyChecking=no -o BatchMode=yes -o ConnectTimeout=5 "$user@$ip" $cmd 2>&1
         if ($LASTEXITCODE -ne 0 -and ($result -match 'Permission denied|publickey|authentication')) {
-            Show-SdToken $ip $user
-            wh "  Retrying..." DarkGray; Write-Host ""
-            & ssh -i $keyFile -o StrictHostKeyChecking=no -o ConnectTimeout=5 "$user@$ip" $cmd 2>&1 | ForEach-Object { "  $_" }
+            if (Test-SdHostTrusted $ip $user) {
+                wh "  Key auth failed — retrying..." Yellow; Write-Host ""
+                & ssh -i $keyFile -o StrictHostKeyChecking=no -o ConnectTimeout=5 "$user@$ip" $cmd 2>&1 | ForEach-Object { "  $_" }
+                if ($LASTEXITCODE -ne 0) { wh "  Still failed. On the remote, re-run: killport ssh ks:<your-token>" Red }
+            } else {
+                Show-SdToken $ip $user
+                wh "  Retrying..." DarkGray; Write-Host ""
+                & ssh -i $keyFile -o StrictHostKeyChecking=no -o ConnectTimeout=5 "$user@$ip" $cmd 2>&1 | ForEach-Object { "  $_" }
+            }
         } elseif ($result) {
             $result | ForEach-Object { "  $_" }
         }
