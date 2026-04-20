@@ -6,7 +6,7 @@ param(
     [Parameter(Mandatory=$false, Position=4)] [string]$Arg4
 )
 
-$VERSION = "1.10.26"
+$VERSION = "1.10.27"
 $REPO    = "skosari/killport-win"
 $RAW     = "https://raw.githubusercontent.com/$REPO/main"
 
@@ -2321,8 +2321,9 @@ function Invoke-SshDispatch([string]$subcmd) {
                 Write-Host ""
                 wh "      killport open 22" Cyan
                 wh "      Start-Service sshd" Cyan
+                wh "      Set-Service -Name sshd -StartupType 'Automatic'" Cyan
                 Write-Host ""
-                wh "  (Windows OpenSSH can stop unexpectedly — these reopen the firewall and restart the service.)" DarkGray
+                wh "  (Windows OpenSSH can stop unexpectedly — these reopen the firewall, restart the service, and enable auto-start.)" DarkGray
                 Write-Host ""
             }
             return
