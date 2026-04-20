@@ -6,7 +6,7 @@ param(
     [Parameter(Mandatory=$false, Position=4)] [string]$Arg4
 )
 
-$VERSION = "1.10.25"
+$VERSION = "1.10.26"
 $REPO    = "skosari/killport-win"
 $RAW     = "https://raw.githubusercontent.com/$REPO/main"
 
@@ -2233,12 +2233,33 @@ function Invoke-SshDispatch([string]$subcmd) {
         }
         wh "  From: $rUser@$rIp" DarkGray; Write-Host ""
 
+        # Windows OpenSSH requires admin users' keys in a separate file
+        $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+        $adminKeys = "C:\ProgramData\ssh\administrators_authorized_keys"
+        if ($isAdmin) {
+            $existingAdmin = Get-Content $adminKeys -ErrorAction SilentlyContinue
+            if ($existingAdmin -contains $rPubkey) {
+                wh "  Key already present in administrators_authorized_keys — no change." Yellow
+            } else {
+                Add-Content -Path $adminKeys -Value "`n$rPubkey" -ErrorAction SilentlyContinue
+                # Fix permissions: only SYSTEM and Administrators (required by OpenSSH)
+                icacls $adminKeys /inheritance:r /grant "SYSTEM:(F)" /grant "Administrators:(F)" 2>&1 | Out-Null
+                wh "  Key added to administrators_authorized_keys" Green
+            }
+            Write-Host ""
+        } else {
+            wh "  Note: if '$($env:USERNAME)' is an Administrator, run killport as Administrator" Yellow
+            wh "  so the key is also written to administrators_authorized_keys (required by Windows OpenSSH)" DarkGray
+            Write-Host ""
+        }
+
         # advisory: check OpenSSH Server service
         $svc = Get-Service -Name 'sshd' -ErrorAction SilentlyContinue
         if (-not $svc -or $svc.Status -ne 'Running') {
             wh "  OpenSSH Server not running." Yellow
             wh "  Enable: Settings -> Apps -> Optional Features -> OpenSSH Server" DarkGray
             wh "  Or run: Start-Service sshd" DarkGray
+            wh "  To auto-start on boot: Set-Service -Name sshd -StartupType 'Automatic'" DarkGray
             Write-Host ""
         }
 
@@ -2520,27 +2541,29 @@ if (-not $Command) {
     Write-Host "  killport update            update to the latest version"
     Write-Host "  killport uninstall         remove killport and all firewall rules"
     Write-Host ""
-    Write-Host "  killport <port>            kill whatever is running on that port"
-    Write-Host "  killport ports             inspect all ports with firewall status"
-    Write-Host "  killport status <port>     show if a port is open or closed"
-    Write-Host "  killport list              list all listening ports"
-    Write-Host "  killport open <port>       open a port through Windows Firewall"
-    Write-Host "  killport openports         show all ports open to external access"
-    Write-Host "  killport openports <ip>    probe an IP from this machine to check open ports"
-    Write-Host "  killport close <port>      close a port from external connections"
-    Write-Host "  killport closedports       show all listening ports with no external access"
-    Write-Host "  killport ip                show IP addresses, DNS, and network info"
-    Write-Host "  killport scan <ip>         scan ports on a remote host (no AI)"
-    Write-Host "  killport scan <ip> all     scan all 65535 ports on a remote host"
-    Write-Host "  killport watch <port>      monitor live connections to a local port"
-    Write-Host "  killport cert <host:port>  inspect TLS certificate (expiry, SANs, cipher)"
-    Write-Host "  killport sniff <port>      capture and display traffic on a port"
-    Write-Host "  killport sniff <ip:port>   capture traffic to/from a specific host:port"
-    Write-Host "  killport vuln <ip:port>    detect service version + query CVE database"
-    Write-Host "  killport audit             review firewall rules with plain-English findings"
-    Write-Host "  killport dns <domain>      DNS recon: A/MX/TXT/NS/AXFR zone transfer test"
-    Write-Host "  killport forward <p> <h:p> forward a local port to a remote host:port"
-    Write-Host "  killport stress <ip:port>  authorized connection flood / stress test"
+    Write-Host "  *** BASIC OPERATIONS ***"
+    Write-Host "  killport <port>              Kill whatever is running on that port"
+    Write-Host "  killport list                List all listening ports"
+    Write-Host "  killport status <port>       Show if a port is open or closed"
+    Write-Host "  killport ports               Inspect all ports with firewall status"
+    Write-Host ""
+    Write-Host "  *** FIREWALL CONTROL ***"
+    Write-Host "  killport open <port>         Open a port to external connections"
+    Write-Host "  killport close <port>        Close a port from external connections"
+    Write-Host "  killport openports           Show all ports open to external access"
+    Write-Host "  killport closedports         Show all listening ports with no external access"
+    Write-Host "  killport openports <ip>      Probe an IP to check open ports (from this machine)"
+    Write-Host "  killport audit               Review firewall rules with plain-English findings"
+    Write-Host ""
+    Write-Host "  *** PORT FORWARDING ***"
+    Write-Host "  killport forward <p> <h:p>   Forward a local port to a remote host:port"
+    Write-Host ""
+    Write-Host "  *** NETWORK SCANNING ***"
+    Write-Host "  killport ip                  Show IP addresses, DNS, and network info"
+    Write-Host "  killport scan                Scan local network for all active computers"
+    Write-Host "  killport scan <ip>           Scan common ports on a remote host"
+    Write-Host "  killport scan <ip> all       Scan all 65535 ports on a remote host"
+    Write-Host "  killport dns <domain>        DNS recon: A/MX/TXT/NS/AXFR zone transfer test"
     Write-Host ""
     Write-Host "  *** SSH EASY CONNECT ***"
     Write-Host "  killport ssh               generate a token so another machine can SSH in"
@@ -2548,20 +2571,30 @@ if (-not $Command) {
     Write-Host "  killport ssh list          show all saved SSH connections"
     Write-Host "  killport ssh <name>        ssh to a saved connection using your key"
     Write-Host ""
-    Write-Host "  *** SHUTDOWN ***"
-    Write-Host "  killport shutdown <ip>     send shutdown signal to a remote machine"
-    Write-Host "  killport shutdown <name>   shut down a saved host by name"
-    Write-Host "  killport shutdown list     show all saved shutdown hosts"
-    Write-Host ""
     Write-Host "  *** WAKE ON LAN ***"
     Write-Host "  killport wol               scan network and wake or save host"
     Write-Host "  killport wol <name>        wake a saved host by name"
     Write-Host "  killport wol save <n> <mac> [ip]  save a host for quick wake"
     Write-Host "  killport wol list          show saved WoL hosts"
     Write-Host ""
+    Write-Host "  *** SHUTDOWN ***"
+    Write-Host "  killport shutdown          scan network and pick a machine to shut down"
+    Write-Host "  killport shutdown <ip>     shut down a remote machine via SSH"
+    Write-Host "  killport shutdown <name>   shut down a saved host by name"
+    Write-Host "  killport shutdown list     show all saved shutdown hosts"
+    Write-Host ""
+    Write-Host "  *** TRAFFIC MONITORING ***"
+    Write-Host "  killport watch <port>        Monitor live connections to a local port"
+    Write-Host "  killport sniff <port>        Capture and display traffic on a port"
+    Write-Host "  killport sniff <ip:port>     Capture traffic to/from a specific host:port"
+    Write-Host ""
+    Write-Host "  *** SECURITY & TESTING ***"
+    Write-Host "  killport cert <host:port>    Inspect TLS certificate (expiry, SANs, cipher)"
+    Write-Host "  killport vuln <ip:port>      Detect service version + query CVE database"
+    Write-Host "  killport stress <ip:port>    Authorized connection flood / stress test"
+    Write-Host ""
     Write-Host "  *** REQUIRES OLLAMA ***"
     Write-Host "  killport attack <ip>       AI pentest: scan all ports + analysis  (requires Ollama)"
-    Write-Host "  killport attack allports <ip>  AI pentest: scan all 65535 ports  (requires Ollama)"
     Write-Host "  killport attack <ip>:port  AI pentest: scan single port + analysis  (requires Ollama)"
     Write-Host "  killport attack log        view attack history"
     Write-Host "  killport fix <ip:port>     detect vulns and generate/apply a fix  (requires Ollama)"
