@@ -2292,6 +2292,18 @@ function Invoke-SshDispatch([string]$subcmd) {
             wh "`n  Connecting to $subcmd ($($entry.user)@$($entry.ip))..." DarkGray
             Write-Host ""
             & ssh -i $keyFile "$($entry.user)@$($entry.ip)"
+            if ($LASTEXITCODE -ne 0) {
+                Write-Host ""
+                wh "  Connection failed." Red
+                Write-Host ""
+                wh "  If the remote is a Windows machine, run these on it:" Yellow
+                Write-Host ""
+                wh "      killport open 22" Cyan
+                wh "      Start-Service sshd" Cyan
+                Write-Host ""
+                wh "  (Windows OpenSSH can stop unexpectedly — these reopen the firewall and restart the service.)" DarkGray
+                Write-Host ""
+            }
             return
         }
         wh "`n  No saved connection named '$subcmd'." Red
