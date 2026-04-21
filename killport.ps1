@@ -6,7 +6,7 @@ param(
     [Parameter(Mandatory=$false, Position=4)] [string]$Arg4
 )
 
-$VERSION = "1.10.36"
+$VERSION = "1.10.37"
 $REPO    = "skosari/killport-win"
 $RAW     = "https://raw.githubusercontent.com/$REPO/main"
 
@@ -1773,53 +1773,142 @@ function Audit-Firewall {
     Write-Host ""
     wh "  killport audit" Cyan -nl; wh "  firewall rule review" DarkGray; Write-Host ""
     Write-Rule; Write-Host ""
-    wh "  Windows Firewall rules (inbound, enabled):" DarkGray; Write-Host ""
 
     $rules = $null
     try {
         Write-Host -NoNewline "  Loading firewall rules..."
         $rules = Get-NetFirewallRule -Direction Inbound -Enabled True -ErrorAction Stop
-        Write-Host "`r  $($rules.Count) inbound rules loaded.        "
+        Write-Host "`r  $($rules.Count) enabled inbound rules loaded.        "
     } catch {
         try {
             $raw = netsh advfirewall firewall show rule name=all dir=in 2>$null
-            Write-Host ($raw | Out-String)
-            return
+            Write-Host ($raw | Out-String); return
         } catch { wh "  Could not retrieve firewall rules. Try running as Administrator." Yellow; Write-Host ""; return }
     }
     if (-not $rules) { wh "  No enabled inbound rules found." DarkGray; Write-Host ""; return }
 
-    $dangerPorts = @{ 3306="MySQL"; 5432="PostgreSQL"; 6379="Redis"; 27017="MongoDB"; 9200="Elasticsearch"; 11211="Memcached" }
-    $allowRules  = @($rules | Where-Object { $_.Action -eq "Allow" })
-    $total       = $allowRules.Count
-    $findings    = 0
-    $i           = 0
+    $allowRules = @($rules | Where-Object { $_.Action -eq "Allow" })
+    $blockRules = @($rules | Where-Object { $_.Action -eq "Block" })
 
-    Write-Host ""
+    # Cross-reference: which ports are actually listening right now
+    $listening = @{}
+    netstat -ano | Select-String "LISTENING" | ForEach-Object {
+        $p = ($_ -split '\s+') | Where-Object { $_ -ne '' }
+        if ($p[1] -match ':(\d+)$') { $listening[[int]$Matches[1]] = $true }
+    }
+
+    $dangerPorts = @{
+        21="FTP"; 22="SSH"; 23="Telnet"; 25="SMTP"; 53="DNS"
+        135="RPC/DCOM"; 139="NetBIOS"; 445="SMB"; 389="LDAP"; 636="LDAPS"
+        1433="MSSQL"; 1521="Oracle DB"; 3306="MySQL"; 3389="RDP"
+        5432="PostgreSQL"; 5900="VNC"; 6379="Redis"; 8080="HTTP-Alt"
+        9200="Elasticsearch"; 11211="Memcached"; 27017="MongoDB"
+    }
+
+    $highs   = [System.Collections.Generic.List[object]]::new()
+    $mediums = [System.Collections.Generic.List[object]]::new()
+    $total   = $allowRules.Count
+    $i       = 0
+
     foreach ($r in $allowRules) {
         $i++
-        Write-Host -NoNewline ("`r  Checking rule $i / $total ...   ")
-        $filter    = $r | Get-NetFirewallPortFilter -ErrorAction SilentlyContinue
-        $localPort = $filter.LocalPort -as [int]
-        if ($localPort -and $dangerPorts.ContainsKey($localPort)) {
-            Write-Host ""
-            wh "  ⚠  Port $localPort ($($dangerPorts[$localPort])) is allowed inbound — confirm restricted to trusted IPs." Yellow
-            $findings++
+        Write-Host -NoNewline ("`r  Analysing $i / $total ...   ")
+
+        $pf = $r | Get-NetFirewallPortFilter    -ErrorAction SilentlyContinue
+        $af = $r | Get-NetFirewallAddressFilter  -ErrorAction SilentlyContinue
+        $xf = $r | Get-NetFirewallApplicationFilter -ErrorAction SilentlyContinue
+
+        $localPort   = $pf.LocalPort
+        $remoteAddr  = $af.RemoteAddress
+        $program     = $xf.Program
+        $isAnyRemote = ($remoteAddr -eq "Any" -or "Any" -in @($remoteAddr))
+        $isAnyPort   = ($localPort  -eq "Any" -or "Any" -in @($localPort))
+        $isSpecificApp = $program -and $program -notin @("Any","System","")
+        $isPublic    = $r.Profile -match "Public|Any"
+        $portNum     = $localPort -as [int]
+        $isLive      = $portNum -and $listening.ContainsKey($portNum)
+        $portLabel   = if ($portNum -and $dangerPorts[$portNum]) { "$portNum ($($dangerPorts[$portNum]))" } elseif ($portNum) { "$portNum" } else { $localPort }
+        $appNote     = if ($isSpecificApp) { " · app: $(Split-Path $program -Leaf)" } else { "" }
+
+        if ($isAnyPort -and $isAnyRemote -and -not $isSpecificApp) {
+            $sev = if ($isPublic) { "HIGH" } else { "MEDIUM" }
+            $col = if ($sev -eq "HIGH") { $highs } else { $mediums }
+            $col.Add([PSCustomObject]@{
+                Name    = $r.DisplayName
+                Port    = "ALL PORTS"
+                Remote  = "Any IP"
+                Profile = "$($r.Profile)"
+                Live    = $false
+                Reason  = "Allows ALL ports from ANY IP$(if($isPublic){' on PUBLIC profile'} else {''})"
+            })
+        } elseif ($portNum -and $dangerPorts.ContainsKey($portNum) -and $isAnyRemote) {
+            $sev = if ($isPublic -or $isLive) { "HIGH" } else { "MEDIUM" }
+            $col = if ($sev -eq "HIGH") { $highs } else { $mediums }
+            $col.Add([PSCustomObject]@{
+                Name    = $r.DisplayName
+                Port    = $portLabel
+                Remote  = "Any IP"
+                Profile = "$($r.Profile)"
+                Live    = $isLive
+                Reason  = "$($dangerPorts[$portNum]) open to any IP$(if($isPublic){', Public profile'})$(if($isLive){' — CURRENTLY LISTENING'})$appNote"
+            })
+        } elseif ($isAnyPort -and $isPublic -and -not $isSpecificApp) {
+            $mediums.Add([PSCustomObject]@{
+                Name    = $r.DisplayName
+                Port    = "ALL PORTS"
+                Remote  = "$remoteAddr"
+                Profile = "$($r.Profile)"
+                Live    = $false
+                Reason  = "Allows all ports on Public profile$appNote"
+            })
         }
     }
-    Write-Host ("`r  Checked $total allow rules.          ")
+
+    Write-Host ("`r  Analysed $total rules.                              ")
     Write-Host ""
 
-    $allowAll = $rules | Where-Object { $_.Action -eq "Allow" -and $_.DisplayName -match "All|Any" }
-    if ($allowAll) { wh "  ⚠  Broad allow-all rules detected — review these carefully." Yellow; $findings++ }
+    if ($highs.Count -gt 0) {
+        wh "  ── HIGH RISK ($($highs.Count) rules) " Red
+        Write-Host ""
+        foreach ($f in $highs) {
+            wh "  ✗  $($f.Name)" Red
+            wh ("     {0,-18} {1}" -f "Port:", $f.Port) DarkGray
+            wh ("     {0,-18} {1}" -f "Allowed from:", $f.Remote) DarkGray
+            wh ("     {0,-18} {1}" -f "Profile:", $f.Profile) DarkGray
+            wh "     → $($f.Reason)" Yellow
+            Write-Host ""
+        }
+    }
 
-    $blockCount = ($rules | Where-Object { $_.Action -eq "Block" }).Count
-    if ($blockCount -gt 0) { wh "  ✓  $blockCount explicit block rule(s) present." Green }
-    else { wh "  ⚠  No explicit block rules found." Yellow; $findings++ }
+    if ($mediums.Count -gt 0) {
+        wh "  ── MEDIUM RISK ($($mediums.Count) rules) " Yellow
+        Write-Host ""
+        foreach ($f in $mediums) {
+            wh "  ⚠  $($f.Name)" Yellow
+            wh ("     {0,-18} {1}" -f "Port:", $f.Port) DarkGray
+            wh ("     {0,-18} {1}" -f "Allowed from:", $f.Remote) DarkGray
+            wh ("     {0,-18} {1}" -f "Profile:", $f.Profile) DarkGray
+            wh "     → $($f.Reason)" DarkGray
+            Write-Host ""
+        }
+    }
 
-    if ($findings -eq 0) { wh "  ✓  No critical issues detected." Green }
-    Write-Host ""
-    wh "  Run 'killport openports' to cross-reference currently exposed ports." DarkGray
+    Write-Rule; Write-Host ""
+
+    if ($blockRules.Count -gt 0) {
+        wh "  ✓  $($blockRules.Count) explicit block rule(s) active." Green
+    } else {
+        wh "  ⚠  No explicit block rules — default Windows Firewall policy applies." Yellow
+    }
+
+    $totalFindings = $highs.Count + $mediums.Count
+    if ($totalFindings -eq 0) {
+        wh "  ✓  No significant issues detected across $total rules." Green
+    } else {
+        Write-Host ""
+        wh "  $($highs.Count) high  ·  $($mediums.Count) medium  ·  $(($total - $totalFindings)) rules OK" $(if ($highs.Count -gt 0) { "Red" } else { "Yellow" })
+        wh "  Run 'killport openports' to see which ports are reachable from outside right now." DarkGray
+    }
     Write-Host ""
 }
 
