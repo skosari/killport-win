@@ -6,7 +6,7 @@ param(
     [Parameter(Mandatory=$false, Position=4)] [string]$Arg4
 )
 
-$VERSION = "1.10.32"
+$VERSION = "1.10.33"
 $REPO    = "skosari/killport-win"
 $RAW     = "https://raw.githubusercontent.com/$REPO/main"
 
@@ -2692,7 +2692,22 @@ function Invoke-SetupWizard {
         $enableSshd = Read-Host
         if ($enableSshd -match '^[Yy]$') {
             try {
-                Add-WindowsCapability -Online -Name OpenSSH.Server~~~~0.0.1.0 2>$null | Out-Null
+                $cap = Get-WindowsCapability -Online -Name OpenSSH.Server~~~~0.0.1.0 -ErrorAction SilentlyContinue
+                if (-not $cap -or $cap.State -ne 'Installed') {
+                    wh "  Installing OpenSSH Server (may take up to 2 minutes)..." DarkGray
+                    $job  = Start-Job { Add-WindowsCapability -Online -Name OpenSSH.Server~~~~0.0.1.0 }
+                    $done = Wait-Job $job -Timeout 120
+                    if (-not $done) {
+                        Stop-Job $job; Remove-Job $job -Force
+                        wh "  ✗ OpenSSH Server install timed out." Red
+                        wh "    Install manually: Settings → Apps → Optional Features → OpenSSH Server" DarkGray
+                        wh "    Then re-run: killport setup" DarkGray
+                        Write-Host ""
+                        return
+                    }
+                    Receive-Job $job -ErrorAction SilentlyContinue | Out-Null
+                    Remove-Job $job -Force
+                }
                 Start-Service sshd -ErrorAction Stop
                 Set-Service -Name sshd -StartupType Automatic
                 wh "  ✓ sshd started and set to auto-start." Green
