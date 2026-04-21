@@ -6,7 +6,7 @@ param(
     [Parameter(Mandatory=$false, Position=4)] [string]$Arg4
 )
 
-$VERSION = "1.10.31"
+$VERSION = "1.10.32"
 $REPO    = "skosari/killport-win"
 $RAW     = "https://raw.githubusercontent.com/$REPO/main"
 
@@ -2101,6 +2101,7 @@ function Invoke-WolDispatch([string]$subcmd, [string]$arg1, [string]$arg2, [stri
                 wh "  ★ " Green -nl:$false; wh $n.PadRight(20) White -nl:$false
                 wh "  $m" -nl:$false; wh "  $ipv" DarkGray
             }
+            wh "  To remove: killport wol delete <name>" DarkGray
             Write-Host ""
         }
         default {
@@ -2180,7 +2181,7 @@ function Save-SshKnown([string]$name, [string]$user, [string]$ip) {
     $existing | Set-Content $SSH_KNOWN_FILE
 }
 
-function Invoke-SshDispatch([string]$subcmd) {
+function Invoke-SshDispatch([string]$subcmd, [string]$arg1 = "") {
     $kpDir   = "$env:USERPROFILE\.killport"
     $keyFile = "$kpDir\id_ed25519"
     $pubFile = "$kpDir\id_ed25519.pub"
@@ -2202,8 +2203,22 @@ function Invoke-SshDispatch([string]$subcmd) {
             wh "  $($e.date)" DarkGray
         }
         Write-Host ""
-        wh "  $($known.Count) connection(s) — 'killport ssh <name>' to connect" DarkGray
+        wh "  $($known.Count) connection(s)  ·  'killport ssh <name>' to connect  ·  'killport ssh delete <name>' to remove" DarkGray
         Write-Host ""; return
+    }
+
+    # ── delete mode ───────────────────────────────────────────────────────────
+    if ($subcmd -eq 'delete' -or $subcmd -eq 'remove') {
+        if (-not $arg1) { wh "`n  Usage: killport ssh delete <name>" Red; Write-Host ""; exit 1 }
+        $knownFile = "$env:USERPROFILE\.killport\ssh_known"
+        if (Test-Path $knownFile) {
+            $lines = Get-Content $knownFile
+            if ($lines | Where-Object { $_ -match "^$([regex]::Escape($arg1))\|" }) {
+                ($lines | Where-Object { $_ -notmatch "^$([regex]::Escape($arg1))\|" }) | Set-Content $knownFile
+                wh "`n  Removed: " Green -nl:$false; Write-Host $arg1; Write-Host ""
+            } else { wh "`n  No saved connection named '$arg1'." Yellow; Write-Host "" }
+        } else { wh "`n  No saved connections file found." Yellow; Write-Host "" }
+        return
     }
 
     # ── accept (ks:token) ─────────────────────────────────────────────────────
@@ -2379,7 +2394,7 @@ function Invoke-SshDispatch([string]$subcmd) {
 
 # ── shutdown ─────────────────────────────────────────────────────────────────
 
-function Invoke-ShutdownDispatch([string]$subcmd) {
+function Invoke-ShutdownDispatch([string]$subcmd, [string]$arg1 = "") {
     $kpDir    = "$env:APPDATA\killport"
     $sdFile   = "$kpDir\shutdown_hosts"
     $keyFile  = "$kpDir\id_ed25519"
@@ -2471,7 +2486,22 @@ function Invoke-ShutdownDispatch([string]$subcmd) {
         foreach ($h in $known) {
             Write-Host ("  {0,-14} {1,-9} {2,-18} {3,-16} {4}" -f $h.name,$h.os,$h.ip,$h.user,$h.date)
         }
+        Write-Host ""
+        wh "  $($known.Count) host(s)  ·  'killport shutdown <name>' to shut down  ·  'killport shutdown delete <name>' to remove" DarkGray
         Write-Host ""; return
+    }
+
+    # ── delete mode ───────────────────────────────────────────────────────────
+    if ($subcmd -eq 'delete' -or $subcmd -eq 'remove') {
+        if (-not $arg1) { wh "`n  Usage: killport shutdown delete <name>" Red; Write-Host ""; exit 1 }
+        if (Test-Path $sdFile) {
+            $lines = Get-Content $sdFile
+            if ($lines | Where-Object { $_ -match "^$([regex]::Escape($arg1))\|" }) {
+                ($lines | Where-Object { $_ -notmatch "^$([regex]::Escape($arg1))\|" }) | Set-Content $sdFile
+                wh "`n  Removed: " Green -nl:$false; Write-Host $arg1; Write-Host ""
+            } else { wh "`n  No saved host named '$arg1'." Yellow; Write-Host "" }
+        } else { wh "`n  No saved hosts file found." Yellow; Write-Host "" }
+        return
     }
 
     # ── name lookup ──────────────────────────────────────────────────────────
@@ -3170,9 +3200,9 @@ switch ($Command.ToLower()) {
     "audit"       { Audit-Firewall }
     "dns"         { Invoke-DnsRecon $Port }
     "forward"     { Forward-Port $Port $Extra }
-    "ssh"         { Invoke-SshDispatch $Port }
+    "ssh"         { Invoke-SshDispatch $Port $Extra }
     "setup"       { Invoke-SetupWizard }
-    "shutdown"    { Invoke-ShutdownDispatch $Port }
+    "shutdown"    { Invoke-ShutdownDispatch $Port $Extra }
     "restart"     { Invoke-RestartDispatch $Port }
     "wol"         { Invoke-WolDispatch $Port $Extra $Arg3 $Arg4 }
     "status"      { if (-not $Port) { Write-Host "Usage: killport status <port>" } else { Status-Port $Port } }
