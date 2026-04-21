@@ -2362,9 +2362,19 @@ function Invoke-SshDispatch([string]$subcmd) {
 
     wh "  Run this on the other machine:" White; Write-Host ""
     wh "  killport ssh ks:$token" Cyan; Write-Host ""
-    wh "  Then connect from this PC with:" DarkGray
-    wh "  ssh -i ~/.killport/id_ed25519 <their-user>@<their-ip>" Cyan; Write-Host ""
     wh "  Your IP on this machine: $localIp" DarkGray; Write-Host ""
+    wh "  When they run it, they'll get a return token. Paste it here to save" DarkGray
+    wh "  the connection and enable SSH in both directions." DarkGray; Write-Host ""
+    Write-Host "  Return token (ks:...) or Enter to skip -> " -NoNewline
+    $returnToken = Read-Host
+    if ($returnToken -match '^ks:') {
+        Invoke-SshDispatch $returnToken
+    } else {
+        Write-Host ""
+        wh "  Skipped. Once they accept, you can SSH in with:" DarkGray
+        wh "  ssh -i ~/.killport/id_ed25519 <their-user>@<their-ip>" Cyan; Write-Host ""
+        wh "  Or run 'killport ssh' again to exchange tokens." DarkGray; Write-Host ""
+    }
 }
 
 # ── shutdown ─────────────────────────────────────────────────────────────────
