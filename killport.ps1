@@ -6,7 +6,7 @@ param(
     [Parameter(Mandatory=$false, Position=4)] [string]$Arg4
 )
 
-$VERSION = "1.10.34"
+$VERSION = "1.10.35"
 $REPO    = "skosari/killport-win"
 $RAW     = "https://raw.githubusercontent.com/$REPO/main"
 
@@ -3138,6 +3138,7 @@ if (-not $Command) {
     Show-Version
     Write-Host "  killport                   show this help"
     Write-Host "  killport config            configure Ollama host and model"
+    Write-Host "  killport setup             interactive pro setup wizard (Ollama, SSH, tools)"
     Write-Host "  killport update            update to the latest version"
     Write-Host "  killport uninstall         remove killport and all firewall rules"
     Write-Host ""
@@ -3178,7 +3179,6 @@ if (-not $Command) {
     Write-Host "  killport wol list          show saved WoL hosts"
     Write-Host ""
     Write-Host "  *** SHUTDOWN & RESTART ***"
-    Write-Host "  killport setup             interactive pro setup wizard (Ollama, SSH, tools)"
     Write-Host "  killport shutdown          scan network and pick a machine to shut down"
     Write-Host "  killport shutdown <ip>     shut down a remote machine via SSH"
     Write-Host "  killport shutdown <name>   shut down a saved host by name"
