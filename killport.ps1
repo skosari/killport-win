@@ -6,7 +6,7 @@ param(
     [Parameter(Mandatory=$false, Position=4)] [string]$Arg4
 )
 
-$VERSION = "1.10.29"
+$VERSION = "1.10.30"
 $REPO    = "skosari/killport-win"
 $RAW     = "https://raw.githubusercontent.com/$REPO/main"
 
@@ -2842,6 +2842,218 @@ function Invoke-RestartDispatch([string]$subcmd) {
     Invoke-RdRestart $os $subcmd $user
 }
 
+# ── Code: opencode launcher ──────────────────────────────────────────────────
+
+function Invoke-CodeDispatch([string]$subcmd) {
+    $script:_CodeModel = ""
+
+    function Get-ModelTier([string]$name) {
+        $m = $name.ToLower()
+        if ($m -match 'qwen2\.5-coder|qwen3|deepseek-coder|deepseek-r1|granite-code') { return "full" }
+        if ($m -match 'codellama|starcoder|codegemma|gemma3|gemma4|llama3') { return "limited" }
+        return "none"
+    }
+
+    function Show-TierLabel([string]$tier) {
+        switch ($tier) {
+            "full"    { wh "✓ full tool-calling" Green -nl:$false }
+            "limited" { wh "⚠ limited tool-calling" Yellow -nl:$false }
+            default   { wh "✗ no tool-calling" Red -nl:$false }
+        }
+    }
+
+    function Install-Opencode {
+        Write-Host ""
+        wh "  Install opencode" Cyan
+        Write-Host ""
+        if (Get-Command winget -ErrorAction SilentlyContinue) {
+            wh "  Trying: winget install opencode" DarkGray
+            Write-Host ""
+            winget install --id=SST.opencode -e
+            if ($LASTEXITCODE -eq 0) { wh "  ✓ opencode installed via winget." Green; Write-Host ""; return $true }
+        }
+        if (Get-Command scoop -ErrorAction SilentlyContinue) {
+            wh "  Trying: scoop install opencode" DarkGray
+            Write-Host ""
+            scoop install opencode
+            if ($LASTEXITCODE -eq 0) { wh "  ✓ opencode installed via scoop." Green; Write-Host ""; return $true }
+        }
+        if (Get-Command npm -ErrorAction SilentlyContinue) {
+            wh "  Trying: npm install -g opencode-ai" DarkGray
+            Write-Host ""
+            npm install -g opencode-ai
+            if ($LASTEXITCODE -eq 0) { wh "  ✓ opencode installed via npm." Green; Write-Host ""; return $true }
+        }
+        wh "  ✗ Could not auto-install. Install manually:" Red
+        Write-Host ""
+        wh "  winget install --id=SST.opencode" Cyan
+        wh "    or" DarkGray
+        wh "  npm install -g opencode-ai" Cyan
+        Write-Host ""
+        return $false
+    }
+
+    function Write-OcConf([string]$ollamaHost, [string]$model) {
+        $ocConfDir = "$env:USERPROFILE\.config\opencode"
+        $ocConf    = "$ocConfDir\opencode.json"
+        $baseUrl   = if ($ollamaHost -match '^https?://') { "$ollamaHost/v1" } else { "http://$ollamaHost/v1" }
+        if (-not (Test-Path $ocConfDir)) { New-Item -ItemType Directory -Path $ocConfDir -Force | Out-Null }
+        $conf = @{}
+        if (Test-Path $ocConf) {
+            try { $conf = Get-Content $ocConf -Raw | ConvertFrom-Json -AsHashtable } catch {}
+        }
+        if (-not $conf.ContainsKey('provider')) { $conf['provider'] = @{} }
+        $conf['provider']['ollama'] = @{ options = @{ baseURL = $baseUrl }; models = @{ $model = @{} } }
+        $conf['model'] = "ollama/$model"
+        $conf | ConvertTo-Json -Depth 10 | Set-Content $ocConf -Encoding UTF8
+    }
+
+    function Pick-Model([string]$ollamaHost) {
+        $url = "http://$ollamaHost/api/tags"
+        try {
+            $resp = Invoke-RestMethod -Uri $url -TimeoutSec 4 -ErrorAction Stop
+        } catch {
+            Write-Host ""
+            wh "  ✗ Cannot reach Ollama at $ollamaHost" Red
+            Write-Host ""
+            wh "  Check that Ollama is running: ollama serve" DarkGray
+            Write-Host ""
+            return $false
+        }
+        $models = @($resp.models | ForEach-Object { $_.name })
+        if ($models.Count -eq 0) {
+            Write-Host ""
+            wh "  No models found in Ollama." Yellow
+            Write-Host ""
+            wh "  Pull a coding model first:" DarkGray
+            Write-Host ""
+            wh "  ollama pull qwen2.5-coder:7b   ← recommended" Cyan
+            Write-Host ""
+            return $false
+        }
+
+        Write-Host ""
+        wh "  Available models on $ollamaHost" Cyan
+        Write-Host ""
+        wh "  Best for opencode: qwen2.5-coder, qwen3, deepseek-coder, deepseek-r1" DarkGray
+        wh "  Requires full tool-calling support to edit files and run commands." DarkGray
+        Write-Host ""
+
+        for ($i = 0; $i -lt $models.Count; $i++) {
+            $tier = Get-ModelTier $models[$i]
+            Write-Host -NoNewline ("  {0,2}  {1,-35}  " -f ($i+1), $models[$i])
+            Show-TierLabel $tier
+            Write-Host ""
+        }
+        Write-Host ""
+
+        $pick = Read-Host "  Pick a model [1-$($models.Count)]"
+        $pick = $pick.Trim()
+        if ($pick -notmatch '^\d+$' -or [int]$pick -lt 1 -or [int]$pick -gt $models.Count) {
+            wh "  Invalid selection." Red; Write-Host ""; return $false
+        }
+
+        $chosen = $models[[int]$pick - 1]
+        $tier   = Get-ModelTier $chosen
+
+        if ($tier -eq "none") {
+            Write-Host ""
+            wh "  ⚠  '$chosen' does not support tool calling." Yellow
+            wh "  opencode needs tool-calling to read/write files and run commands." DarkGray
+            wh "  It will work as a chat assistant only." DarkGray
+            Write-Host ""
+            $cont = Read-Host "  Continue anyway? [y/N]"
+            if ($cont -notmatch '^[Yy]$') { return $false }
+        } elseif ($tier -eq "limited") {
+            Write-Host ""
+            wh "  ⚠  '$chosen' has limited tool-calling support." Yellow
+            wh "  Some opencode features may not work. Consider qwen2.5-coder or qwen3." DarkGray
+            Write-Host ""
+            $cont = Read-Host "  Continue anyway? [Y/n]"
+            if ($cont -match '^[Nn]$') { return $false }
+        }
+
+        $script:_CodeModel = $chosen
+        return $true
+    }
+
+    if ($subcmd -eq "install") {
+        Install-Opencode | Out-Null; return
+    }
+
+    if ($subcmd -eq "model") {
+        $conf = Get-AttackConf
+        $ok = Pick-Model $conf.ollama_host
+        if (-not $ok) { return }
+        Write-Host ""
+        wh "  ✓ Model set to '$($script:_CodeModel)'" Green
+        wh "  Run 'killport code' to launch." DarkGray
+        Write-Host ""
+        $conf.model = $script:_CodeModel
+        Save-AttackConf $conf
+        return
+    }
+
+    if (-not (Get-Command opencode -ErrorAction SilentlyContinue)) {
+        Write-Host ""
+        wh "  opencode is not installed." Yellow
+        Write-Host ""
+        $inst = Read-Host "  Install it now? [Y/n]"
+        if ($inst -notmatch '^[Nn]$') {
+            $ok = Install-Opencode
+            if (-not $ok) { return }
+        } else {
+            wh "  Run 'killport code install' when ready." DarkGray
+            Write-Host ""
+            return
+        }
+    }
+
+    $conf        = Get-AttackConf
+    $ollamaHost  = $conf.ollama_host -replace '^https?://', ''
+    $model       = if ($subcmd -and $subcmd -ne '') { $subcmd } else { $conf.model }
+
+    if (-not $model) {
+        Write-Host ""
+        wh "  No model saved yet — let's pick one." DarkGray
+        $ok = Pick-Model $ollamaHost
+        if (-not $ok) { return }
+        $model = $script:_CodeModel
+        $conf.model = $model
+        Save-AttackConf $conf
+    } else {
+        $tier = Get-ModelTier $model
+        if ($tier -eq "none") {
+            Write-Host ""
+            wh "  ⚠  '$model' does not support tool calling." Yellow
+            wh "  opencode needs tool-calling to read/write files and run commands." DarkGray
+            wh "  It will work as a chat assistant only." DarkGray
+            Write-Host ""
+            $cont = Read-Host "  Continue anyway? [y/N]"
+            if ($cont -notmatch '^[Yy]$') { return }
+        } elseif ($tier -eq "limited") {
+            Write-Host ""
+            wh "  ⚠  '$model' has limited tool-calling support." Yellow
+            wh "  Some opencode features may not work. Consider qwen2.5-coder or qwen3." DarkGray
+            Write-Host ""
+            $cont = Read-Host "  Continue anyway? [Y/n]"
+            if ($cont -match '^[Nn]$') { return }
+        }
+    }
+
+    Write-Host ""
+    wh "  ✓ Configuring opencode" Green
+    wh "  Ollama:  $ollamaHost" DarkGray
+    wh "  Model:   $model" DarkGray
+    Write-Host ""
+
+    Write-OcConf $ollamaHost $model
+
+    wh "  Launching opencode..." DarkGray
+    Write-Host ""
+    & opencode
+}
+
 # ── main ─────────────────────────────────────────────────────────────────────
 
 if (-not $Command) {
@@ -2909,6 +3121,12 @@ if (-not $Command) {
     Write-Host "  killport vuln <ip:port>      Detect service version + query CVE database"
     Write-Host "  killport stress <ip:port>    Authorized connection flood / stress test"
     Write-Host ""
+    Write-Host "  *** AI CODING ***"
+    Write-Host "  killport code              launch opencode with your saved Ollama config"
+    Write-Host "  killport code <model>      launch opencode with a specific model"
+    Write-Host "  killport code model        pick a model from your Ollama library"
+    Write-Host "  killport code install      install opencode"
+    Write-Host ""
     Write-Host "  *** REQUIRES OLLAMA ***"
     Write-Host "  killport attack <ip>       AI pentest: scan all ports + analysis  (requires Ollama)"
     Write-Host "  killport attack <ip>:port  AI pentest: scan single port + analysis  (requires Ollama)"
@@ -2934,6 +3152,7 @@ switch ($Command.ToLower()) {
     "sniff"       { Sniff-Port $Port }
     "vuln"        { Check-Vuln $Port }
     "fix"         { Invoke-FixDispatch $Port }
+    "code"        { Invoke-CodeDispatch $Port }
     "audit"       { Audit-Firewall }
     "dns"         { Invoke-DnsRecon $Port }
     "forward"     { Forward-Port $Port $Extra }
