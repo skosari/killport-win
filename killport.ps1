@@ -6,7 +6,7 @@ param(
     [Parameter(Mandatory=$false, Position=4)] [string]$Arg4
 )
 
-$VERSION = "1.10.43"
+$VERSION = "1.10.44"
 $REPO    = "skosari/killport-win"
 $RAW     = "https://raw.githubusercontent.com/$REPO/main"
 
@@ -2509,7 +2509,9 @@ function Invoke-SshDispatch([string]$subcmd, [string]$arg1 = "") {
     wh "  When they run it, they'll get a return token. Paste it here to save" DarkGray
     wh "  the connection and enable SSH in both directions." DarkGray; Write-Host ""
     Write-Host "  Return token (ks:...) or Enter to skip -> " -NoNewline
-    $returnToken = Read-Host
+    $returnToken = (Read-Host).Trim()
+    # Accept full "killport ssh ks:..." paste — extract just the ks: token
+    if ($returnToken -match '(ks:[A-Za-z0-9+/=]+)') { $returnToken = $matches[1] }
     if ($returnToken -match '^ks:') {
         Invoke-SshDispatch $returnToken
     } else {
