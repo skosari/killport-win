@@ -6,7 +6,7 @@ param(
     [Parameter(Mandatory=$false, Position=4)] [string]$Arg4
 )
 
-$VERSION = "1.10.35"
+$VERSION = "1.10.36"
 $REPO    = "skosari/killport-win"
 $RAW     = "https://raw.githubusercontent.com/$REPO/main"
 
@@ -2668,7 +2668,17 @@ function Invoke-SetupWizard {
                 wh "  ✓ Connected and saved." Green
                 Write-Host ""
             } catch {
-                wh "  ✗ Could not reach Ollama at $testUrl — skipping." Red
+                wh "  ✗ Could not reach Ollama at $testUrl" Red
+                Write-Host "  Save it anyway (machine may be off)? [y/N] -> " -NoNewline
+                $saveAnyway = Read-Host
+                if ($saveAnyway -match '^[Yy]$') {
+                    $conf.ollama_host = $testUrl; Save-AttackConf $conf
+                    $score++
+                    $setupDone += "Ollama · $testUrl (saved offline)"
+                    wh "  ✓ Saved. killport will connect when the machine is back up." Green
+                } else {
+                    wh "  Skipped. Configure later: killport config" DarkGray
+                }
                 Write-Host ""
             }
         } else {
