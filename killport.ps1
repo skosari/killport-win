@@ -6,7 +6,7 @@ param(
     [Parameter(Mandatory=$false, Position=4)] [string]$Arg4
 )
 
-$VERSION = "1.10.30"
+$VERSION = "1.10.31"
 $REPO    = "skosari/killport-win"
 $RAW     = "https://raw.githubusercontent.com/$REPO/main"
 
@@ -2947,34 +2947,36 @@ function Invoke-CodeDispatch([string]$subcmd) {
         }
         Write-Host ""
 
-        $pick = Read-Host "  Pick a model [1-$($models.Count)]"
-        $pick = $pick.Trim()
-        if ($pick -notmatch '^\d+$' -or [int]$pick -lt 1 -or [int]$pick -gt $models.Count) {
-            wh "  Invalid selection." Red; Write-Host ""; return $false
+        while ($true) {
+            $pick = Read-Host "  Pick a model [1-$($models.Count)]"
+            $pick = $pick.Trim()
+            if ($pick -notmatch '^\d+$' -or [int]$pick -lt 1 -or [int]$pick -gt $models.Count) {
+                wh "  Invalid selection." Red; Write-Host ""; continue
+            }
+
+            $chosen = $models[[int]$pick - 1]
+            $tier   = Get-ModelTier $chosen
+
+            if ($tier -eq "none") {
+                Write-Host ""
+                wh "  ⚠  '$chosen' does not support tool calling." Yellow
+                wh "  opencode needs tool-calling to read/write files and run commands." DarkGray
+                wh "  It will work as a chat assistant only." DarkGray
+                Write-Host ""
+                $cont = Read-Host "  Continue anyway? [y/N]"
+                if ($cont -notmatch '^[Yy]$') { Write-Host ""; continue }
+            } elseif ($tier -eq "limited") {
+                Write-Host ""
+                wh "  ⚠  '$chosen' has limited tool-calling support." Yellow
+                wh "  Some opencode features may not work. Consider qwen2.5-coder or qwen3." DarkGray
+                Write-Host ""
+                $cont = Read-Host "  Continue anyway? [Y/n]"
+                if ($cont -match '^[Nn]$') { Write-Host ""; continue }
+            }
+
+            $script:_CodeModel = $chosen
+            return $true
         }
-
-        $chosen = $models[[int]$pick - 1]
-        $tier   = Get-ModelTier $chosen
-
-        if ($tier -eq "none") {
-            Write-Host ""
-            wh "  ⚠  '$chosen' does not support tool calling." Yellow
-            wh "  opencode needs tool-calling to read/write files and run commands." DarkGray
-            wh "  It will work as a chat assistant only." DarkGray
-            Write-Host ""
-            $cont = Read-Host "  Continue anyway? [y/N]"
-            if ($cont -notmatch '^[Yy]$') { return $false }
-        } elseif ($tier -eq "limited") {
-            Write-Host ""
-            wh "  ⚠  '$chosen' has limited tool-calling support." Yellow
-            wh "  Some opencode features may not work. Consider qwen2.5-coder or qwen3." DarkGray
-            Write-Host ""
-            $cont = Read-Host "  Continue anyway? [Y/n]"
-            if ($cont -match '^[Nn]$') { return $false }
-        }
-
-        $script:_CodeModel = $chosen
-        return $true
     }
 
     if ($subcmd -eq "install") {
@@ -3030,14 +3032,26 @@ function Invoke-CodeDispatch([string]$subcmd) {
             wh "  It will work as a chat assistant only." DarkGray
             Write-Host ""
             $cont = Read-Host "  Continue anyway? [y/N]"
-            if ($cont -notmatch '^[Yy]$') { return }
+            if ($cont -notmatch '^[Yy]$') {
+                Write-Host ""
+                wh "  Pick a different model:" DarkGray
+                $ok = Pick-Model $ollamaHost
+                if (-not $ok) { return }
+                $model = $script:_CodeModel; $conf.model = $model; Save-AttackConf $conf
+            }
         } elseif ($tier -eq "limited") {
             Write-Host ""
             wh "  ⚠  '$model' has limited tool-calling support." Yellow
             wh "  Some opencode features may not work. Consider qwen2.5-coder or qwen3." DarkGray
             Write-Host ""
             $cont = Read-Host "  Continue anyway? [Y/n]"
-            if ($cont -match '^[Nn]$') { return }
+            if ($cont -match '^[Nn]$') {
+                Write-Host ""
+                wh "  Pick a different model:" DarkGray
+                $ok = Pick-Model $ollamaHost
+                if (-not $ok) { return }
+                $model = $script:_CodeModel; $conf.model = $model; Save-AttackConf $conf
+            }
         }
     }
 
