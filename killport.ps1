@@ -6,7 +6,7 @@ param(
     [Parameter(Mandatory=$false, Position=4)] [string]$Arg4
 )
 
-$VERSION = "1.10.37"
+$VERSION = "1.10.38"
 $REPO    = "skosari/killport-win"
 $RAW     = "https://raw.githubusercontent.com/$REPO/main"
 
@@ -1814,21 +1814,27 @@ function Audit-Firewall {
         $i++
         Write-Host -NoNewline ("`r  Analysing $i / $total ...   ")
 
-        $pf = $r | Get-NetFirewallPortFilter    -ErrorAction SilentlyContinue
-        $af = $r | Get-NetFirewallAddressFilter  -ErrorAction SilentlyContinue
+        $pf = $r | Get-NetFirewallPortFilter        -ErrorAction SilentlyContinue
+        $af = $r | Get-NetFirewallAddressFilter     -ErrorAction SilentlyContinue
         $xf = $r | Get-NetFirewallApplicationFilter -ErrorAction SilentlyContinue
 
-        $localPort   = $pf.LocalPort
-        $remoteAddr  = $af.RemoteAddress
-        $program     = $xf.Program
-        $isAnyRemote = ($remoteAddr -eq "Any" -or "Any" -in @($remoteAddr))
-        $isAnyPort   = ($localPort  -eq "Any" -or "Any" -in @($localPort))
-        $isSpecificApp = $program -and $program -notin @("Any","System","")
-        $isPublic    = $r.Profile -match "Public|Any"
-        $portNum     = $localPort -as [int]
-        $isLive      = $portNum -and $listening.ContainsKey($portNum)
-        $portLabel   = if ($portNum -and $dangerPorts[$portNum]) { "$portNum ($($dangerPorts[$portNum]))" } elseif ($portNum) { "$portNum" } else { $localPort }
-        $appNote     = if ($isSpecificApp) { " · app: $(Split-Path $program -Leaf)" } else { "" }
+        # null filter = no restriction on that axis (treat as "Any")
+        $localPort   = if ($pf) { "$($pf.LocalPort)" }   else { "Any" }
+        $remoteAddr  = if ($af) { "$($af.RemoteAddress)" } else { "Any" }
+        $program     = if ($xf) { "$($xf.Program)" }     else { "" }
+        $profileStr  = "$($r.Profile)"
+
+        $isAnyRemote   = $remoteAddr -eq "Any"
+        $isAnyPort     = $localPort  -eq "Any"
+        $isSpecificApp = $program -and $program -notin @("Any", "System", "")
+        $isPublic      = $profileStr -match "Public|Any"
+        $portNum       = $localPort -as [int]
+        $isLive        = [bool]($portNum -and $listening.ContainsKey($portNum))
+        $portLabel     = if ($portNum -and $dangerPorts[$portNum]) { "$portNum ($($dangerPorts[$portNum]))" } elseif ($portNum) { "$portNum" } else { $localPort }
+        $appNote       = if ($isSpecificApp) { " · app: $(Split-Path $program -Leaf)" } else { "" }
+        $pubNote       = if ($isPublic)  { ' on PUBLIC profile' } else { '' }
+        $liveNote      = if ($isLive)    { ' — CURRENTLY LISTENING' } else { '' }
+        $pubComma      = if ($isPublic)  { ', Public profile' } else { '' }
 
         if ($isAnyPort -and $isAnyRemote -and -not $isSpecificApp) {
             $sev = if ($isPublic) { "HIGH" } else { "MEDIUM" }
@@ -1837,9 +1843,9 @@ function Audit-Firewall {
                 Name    = $r.DisplayName
                 Port    = "ALL PORTS"
                 Remote  = "Any IP"
-                Profile = "$($r.Profile)"
+                Profile = $profileStr
                 Live    = $false
-                Reason  = "Allows ALL ports from ANY IP$(if($isPublic){' on PUBLIC profile'} else {''})"
+                Reason  = "Allows ALL ports from ANY IP$pubNote"
             })
         } elseif ($portNum -and $dangerPorts.ContainsKey($portNum) -and $isAnyRemote) {
             $sev = if ($isPublic -or $isLive) { "HIGH" } else { "MEDIUM" }
@@ -1848,16 +1854,16 @@ function Audit-Firewall {
                 Name    = $r.DisplayName
                 Port    = $portLabel
                 Remote  = "Any IP"
-                Profile = "$($r.Profile)"
+                Profile = $profileStr
                 Live    = $isLive
-                Reason  = "$($dangerPorts[$portNum]) open to any IP$(if($isPublic){', Public profile'})$(if($isLive){' — CURRENTLY LISTENING'})$appNote"
+                Reason  = "$($dangerPorts[$portNum]) open to any IP$pubComma$liveNote$appNote"
             })
         } elseif ($isAnyPort -and $isPublic -and -not $isSpecificApp) {
             $mediums.Add([PSCustomObject]@{
                 Name    = $r.DisplayName
                 Port    = "ALL PORTS"
-                Remote  = "$remoteAddr"
-                Profile = "$($r.Profile)"
+                Remote  = $remoteAddr
+                Profile = $profileStr
                 Live    = $false
                 Reason  = "Allows all ports on Public profile$appNote"
             })
