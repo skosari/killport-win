@@ -4,8 +4,8 @@ https://github.com/skosari
 killport Source-Available License
 
 Permission is granted to any person to use, install, and run this software
-free of charge for personal or commercial purposes, subject to the following
-conditions:
+free of charge for personal and non-commercial purposes, subject to the
+following conditions:
 
 1. NO DERIVATIVES — You may not copy, fork, modify, or redistribute this
    software (in whole or in part) under the same or a different name without
@@ -21,7 +21,12 @@ conditions:
 4. NO WARRANTY — This software is provided "as is", without warranty of any
    kind. The author is not liable for any damages arising from its use.
 
-In plain terms: use it freely, share links to the original, but don't copy it
-and call it your own.
+5. COMMERCIAL USE — Use of this software within a for-profit product, service,
+   or business workflow requires a separate written commercial license agreement
+   with the copyright holder.
 
-For permissions beyond the scope of this license, contact: skosari@github
+In plain terms: free for personal use and open source projects. Businesses
+that want to use or bundle killport must get in touch. Don't copy it and call
+it your own.
+
+For commercial licensing or other permissions, contact: skosari@github
