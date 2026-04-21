@@ -6,7 +6,7 @@ param(
     [Parameter(Mandatory=$false, Position=4)] [string]$Arg4
 )
 
-$VERSION = "1.10.38"
+$VERSION = "1.10.39"
 $REPO    = "skosari/killport-win"
 $RAW     = "https://raw.githubusercontent.com/$REPO/main"
 
@@ -1830,34 +1830,34 @@ function Audit-Firewall {
         $isPublic      = $profileStr -match "Public|Any"
         $portNum       = $localPort -as [int]
         $isLive        = [bool]($portNum -and $listening.ContainsKey($portNum))
-        $portLabel     = if ($portNum -and $dangerPorts[$portNum]) { "$portNum ($($dangerPorts[$portNum]))" } elseif ($portNum) { "$portNum" } else { $localPort }
-        $appNote       = if ($isSpecificApp) { " · app: $(Split-Path $program -Leaf)" } else { "" }
-        $pubNote       = if ($isPublic)  { ' on PUBLIC profile' } else { '' }
-        $liveNote      = if ($isLive)    { ' — CURRENTLY LISTENING' } else { '' }
-        $pubComma      = if ($isPublic)  { ', Public profile' } else { '' }
+        $svcName_  = [string]$dangerPorts[$portNum]
+        $portLabel = if ($portNum -and $svcName_) { "$portNum ($svcName_)" } elseif ($portNum) { "$portNum" } else { $localPort }
+        $appNote   = if ($isSpecificApp) { " · app: $(Split-Path $program -Leaf)" } else { "" }
+        $pubNote   = if ($isPublic)  { ' on PUBLIC profile' } else { '' }
+        $liveNote  = if ($isLive)    { ' — CURRENTLY LISTENING' } else { '' }
+        $pubComma  = if ($isPublic)  { ', Public profile' } else { '' }
 
         if ($isAnyPort -and $isAnyRemote -and -not $isSpecificApp) {
-            $sev = if ($isPublic) { "HIGH" } else { "MEDIUM" }
-            $col = if ($sev -eq "HIGH") { $highs } else { $mediums }
-            $col.Add([PSCustomObject]@{
+            $entry = [PSCustomObject]@{
                 Name    = $r.DisplayName
                 Port    = "ALL PORTS"
                 Remote  = "Any IP"
                 Profile = $profileStr
                 Live    = $false
                 Reason  = "Allows ALL ports from ANY IP$pubNote"
-            })
+            }
+            if ($isPublic) { $highs.Add($entry) } else { $mediums.Add($entry) }
         } elseif ($portNum -and $dangerPorts.ContainsKey($portNum) -and $isAnyRemote) {
-            $sev = if ($isPublic -or $isLive) { "HIGH" } else { "MEDIUM" }
-            $col = if ($sev -eq "HIGH") { $highs } else { $mediums }
-            $col.Add([PSCustomObject]@{
+            $svcName = [string]$dangerPorts[$portNum]
+            $entry = [PSCustomObject]@{
                 Name    = $r.DisplayName
                 Port    = $portLabel
                 Remote  = "Any IP"
                 Profile = $profileStr
                 Live    = $isLive
-                Reason  = "$($dangerPorts[$portNum]) open to any IP$pubComma$liveNote$appNote"
-            })
+                Reason  = "$svcName open to any IP$pubComma$liveNote$appNote"
+            }
+            if ($isPublic -or $isLive) { $highs.Add($entry) } else { $mediums.Add($entry) }
         } elseif ($isAnyPort -and $isPublic -and -not $isSpecificApp) {
             $mediums.Add([PSCustomObject]@{
                 Name    = $r.DisplayName
