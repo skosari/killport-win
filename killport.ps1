@@ -6,7 +6,7 @@ param(
     [Parameter(Mandatory=$false, Position=4)] [string]$Arg4
 )
 
-$VERSION = "1.10.42"
+$VERSION = "1.10.43"
 $REPO    = "skosari/killport-win"
 $RAW     = "https://raw.githubusercontent.com/$REPO/main"
 
@@ -2264,20 +2264,19 @@ function Invoke-WolDispatch([string]$subcmd, [string]$arg1, [string]$arg2, [stri
 $SSH_KNOWN_FILE = "$env:APPDATA\killport\ssh_known"
 
 function Get-OurIp {
-    # Prefer RFC 1918 LAN addresses; sort descending so /24 beats /8
-    $ip = (Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue |
-           Where-Object {
-               $a = $_.IPAddress
-               $a -notlike '127.*' -and $a -notlike '169.254.*' -and $_.PrefixOrigin -ne 'WellKnown' -and
-               ($a -like '10.*' -or $a -like '192.168.*' -or ($a -like '172.*' -and ([int]($a -split '\.')[1]) -ge 16 -and ([int]($a -split '\.')[1]) -le 31))
-           } |
-           Sort-Object PrefixLength -Descending | Select-Object -First 1).IPAddress
-    # Fall back to any non-loopback non-link-local address if no private IP found
-    if (-not $ip) {
-        $ip = (Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue |
-               Where-Object { $_.IPAddress -notlike '127.*' -and $_.IPAddress -notlike '169.254.*' -and $_.PrefixOrigin -ne 'WellKnown' } |
-               Sort-Object PrefixLength -Descending | Select-Object -First 1).IPAddress
+    # Use the interface that owns the default gateway route — same logic as Show-IP
+    $gwRoute = Get-NetRoute -DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinue |
+               Sort-Object RouteMetric | Select-Object -First 1
+    if ($gwRoute) {
+        $ip = (Get-NetIPAddress -InterfaceIndex $gwRoute.InterfaceIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue |
+               Where-Object { $_.IPAddress -notlike '127.*' -and $_.IPAddress -notlike '169.254.*' } |
+               Select-Object -First 1).IPAddress
+        if ($ip) { return $ip }
     }
+    # Fallback: any non-loopback non-link-local IPv4
+    $ip = (Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue |
+           Where-Object { $_.IPAddress -notlike '127.*' -and $_.IPAddress -notlike '169.254.*' } |
+           Select-Object -First 1).IPAddress
     if ($ip) { return $ip } else { return "<this-pc-ip>" }
 }
 
