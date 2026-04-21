@@ -6,7 +6,7 @@ param(
     [Parameter(Mandatory=$false, Position=4)] [string]$Arg4
 )
 
-$VERSION = "1.10.33"
+$VERSION = "1.10.34"
 $REPO    = "skosari/killport-win"
 $RAW     = "https://raw.githubusercontent.com/$REPO/main"
 
@@ -442,6 +442,13 @@ function Uninstall-Killport {
         "$env:ProgramData\killport\attack.log"
     ) | Where-Object { Test-Path $_ }
 
+    wh "  Keep killport.bat so you can reinstall with just " White -nl:$false
+    wh "killport setup" Cyan -nl:$false
+    wh "? " White -nl:$false
+    wh "[Y/n] " DarkGray -nl:$false
+    $keepBat = (Read-Host).Trim().ToLower() -ne 'n'
+    Write-Host ""
+
     $keepData = $true
     if ($dataFiles.Count -gt 0) {
         wh "  Saved data found:" DarkGray
@@ -460,7 +467,16 @@ function Uninstall-Killport {
     if ($rules) { $rules | Remove-NetFirewallRule; wh "  Removed $($rules.Count) firewall rule(s)" DarkGray }
 
     $bat = "$env:SystemRoot\System32\killport.bat"
-    if (Test-Path $bat) { Remove-Item $bat -Force; wh "  Removed $bat" DarkGray }
+    if (Test-Path $bat) {
+        if ($keepBat) {
+            wh "  Kept $bat" DarkGray
+        } else {
+            # Deferred delete: cmd.exe holds the bat open while running it, so deleting it
+            # directly causes "batch file cannot be found". Schedule deletion after exit.
+            Start-Process cmd -ArgumentList "/c","ping 127.0.0.1 -n 2 >nul & del `"$bat`"" -WindowStyle Hidden
+            wh "  Removed $bat" DarkGray
+        }
+    }
 
     $impl = "$env:ProgramData\killport"
     if (Test-Path $impl) {
@@ -491,11 +507,13 @@ function Uninstall-Killport {
     }
 
     Write-Host ""
-    if ($keepData) {
+    if (-not $keepBat -and -not $keepData) {
+        wh "killport uninstalled. No trace left." Green
+    } elseif ($keepData) {
         wh "killport uninstalled." Green
         wh "Your data will be picked up automatically on next install." DarkGray
     } else {
-        wh "killport uninstalled. No trace left." Green
+        wh "killport uninstalled." Green
     }
     Write-Host ""
 }
