@@ -6,7 +6,7 @@ param(
     [Parameter(Mandatory=$false, Position=4)] [string]$Arg4
 )
 
-$VERSION = "1.10.39"
+$VERSION = "1.10.40"
 $REPO    = "skosari/killport-win"
 $RAW     = "https://raw.githubusercontent.com/$REPO/main"
 
@@ -1830,7 +1830,7 @@ function Audit-Firewall {
         $isPublic      = $profileStr -match "Public|Any"
         $portNum       = $localPort -as [int]
         $isLive        = [bool]($portNum -and $listening.ContainsKey($portNum))
-        $svcName_  = [string]$dangerPorts[$portNum]
+        $svcName_  = if ($portNum) { [string]$dangerPorts[$portNum] } else { "" }
         $portLabel = if ($portNum -and $svcName_) { "$portNum ($svcName_)" } elseif ($portNum) { "$portNum" } else { $localPort }
         $appNote   = if ($isSpecificApp) { " · app: $(Split-Path $program -Leaf)" } else { "" }
         $pubNote   = if ($isPublic)  { ' on PUBLIC profile' } else { '' }
