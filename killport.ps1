@@ -6,7 +6,7 @@ param(
     [Parameter(Mandatory=$false, Position=4)] [string]$Arg4
 )
 
-$VERSION = "1.10.44"
+$VERSION = "1.10.45"
 $REPO    = "skosari/killport-win"
 $RAW     = "https://raw.githubusercontent.com/$REPO/main"
 
@@ -2593,9 +2593,11 @@ function Invoke-ShutdownDispatch([string]$subcmd, [string]$arg1 = "") {
         $result = & ssh -i $keyFile -o StrictHostKeyChecking=no -o BatchMode=yes -o ConnectTimeout=5 "$user@$ip" $cmd 2>&1
         if ($LASTEXITCODE -ne 0 -and ($result -match 'Permission denied|publickey|authentication')) {
             if (Test-SdHostTrusted $ip $user) {
-                wh "  Key auth failed — retrying..." Yellow; Write-Host ""
+                wh "  Key auth failed — the killport SSH key is no longer authorized on $ip." Yellow; Write-Host ""
+                wh "  This usually means authorized_keys was changed or the machine was reinstalled." DarkGray; Write-Host ""
+                Show-SdToken $ip $user
                 & ssh -i $keyFile -o StrictHostKeyChecking=no -o ConnectTimeout=5 "$user@$ip" $cmd 2>&1 | ForEach-Object { "  $_" }
-                if ($LASTEXITCODE -ne 0) { wh "  Still failed. On the remote, re-run: killport ssh ks:<your-token>" Red }
+                if ($LASTEXITCODE -ne 0) { wh "  Still failed — make sure killport ssh ks:<token> was accepted on the remote." Red }
             } else {
                 Show-SdToken $ip $user
                 wh "  Retrying..." DarkGray; Write-Host ""
@@ -2962,7 +2964,23 @@ function Invoke-RestartDispatch([string]$subcmd) {
         if ($LASTEXITCODE -eq 0) {
             wh "  ✓ Restart sent to $ip" Green
         } else {
-            wh "  ✗ Could not reach $ip. Check SSH key setup: killport ssh" Red
+            wh "  Key auth failed — the killport SSH key is not authorized on $ip." Yellow; Write-Host ""
+            wh "  This usually means authorized_keys was changed or the machine was reinstalled." DarkGray; Write-Host ""
+            $pubFile = "$keyFile.pub"
+            $ourUser = $env:USERNAME
+            $ourIp   = (Get-NetIPAddress -AddressFamily IPv4 | Where-Object { $_.IPAddress -notmatch '^127\.' } | Select-Object -First 1).IPAddress
+            $ourPub  = (Get-Content $pubFile -Raw -ErrorAction SilentlyContinue).Trim()
+            if ($ourPub) {
+                $obj   = [PSCustomObject]@{ user=$ourUser; ip=$ourIp; pubkey=$ourPub }
+                $json  = $obj | ConvertTo-Json -Compress
+                $token = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($json))
+                wh "  Run this on $ip (as $user) to re-authorize this machine:" DarkGray; Write-Host ""
+                wh "  killport ssh ks:$token" Cyan; Write-Host ""
+                Read-Host "  Press Enter when done" | Out-Null; Write-Host ""
+                & $sshExe -i $keyFile -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new "${user}@${ip}" $cmd 2>&1 | ForEach-Object { Write-Host "  $_" }
+            } else {
+                wh "  Run: killport ssh  to set up SSH key authorization" DarkGray
+            }
         }
         Write-Host ""
     }
