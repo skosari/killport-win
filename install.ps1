@@ -24,7 +24,7 @@ try {
 try {
     $content = (Invoke-WebRequest -Uri "$RAW/killport.bat" -UseBasicParsing).Content
     $content = $content -replace "`r`n", "`n" -replace "`n", "`r`n"
-    [System.IO.File]::WriteAllText("$SYSTEM_DIR\killport.bat", $content, [System.Text.Encoding]::UTF8)
+    [System.IO.File]::WriteAllText("$SYSTEM_DIR\killport.bat", $content, (New-Object System.Text.UTF8Encoding $False))
 } catch {
     Write-Error "Failed to download killport.bat: $_"; exit 1
 }
