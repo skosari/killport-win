@@ -511,10 +511,11 @@ killport ssh ks:<token>
 **After setup — connect by name:**
 
 ```sh
-killport ssh list              # see all saved connections
-killport ssh mini              # SSH straight into your Mac Mini
-killport ssh desktop           # SSH to your Windows desktop
-killport ssh delete mini       # remove a saved connection
+killport ssh list                        # see all saved connections
+killport ssh mini                        # SSH straight into your Mac Mini
+killport ssh desktop                     # SSH to your Windows desktop
+killport ssh delete mini                 # remove a saved connection
+killport ssh delete 'gaming desktop'     # use single quotes for names with spaces
 ```
 
 ---
@@ -529,6 +530,7 @@ killport shutdown 192.168.1.50     # shutdown by IP (prompts OS + user, offers t
 killport shutdown mini             # shutdown a saved host by name
 killport shutdown list             # show all saved hosts
 killport shutdown delete mini      # remove a saved host
+killport shutdown delete 'my htpc' # use single quotes for names with spaces
 
 killport restart 192.168.1.50      # restart by IP
 killport restart mini              # restart a saved host by name

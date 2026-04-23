@@ -2458,7 +2458,9 @@ function Invoke-SshDispatch([string]$subcmd, [string]$arg1 = "") {
             wh "  $($e.date)" DarkGray
         }
         Write-Host ""
-        wh "  $($known.Count) connection(s)  ·  'killport ssh <name>' to connect  ·  'killport ssh delete <name>' to remove" DarkGray
+        wh "  $($known.Count) connection(s)  ·  'killport ssh <name>' to connect  ·  killport ssh delete '<name>' to remove" DarkGray
+        $sshSpaced = $known | Where-Object { $_.name -match ' ' } | Select-Object -First 1
+        if ($sshSpaced) { wh "  Names with spaces need single quotes — e.g.: killport ssh delete '$($sshSpaced.name)'" Yellow }
         Write-Host ""; return
     }
 
@@ -2746,7 +2748,9 @@ function Invoke-ShutdownDispatch([string]$subcmd, [string]$arg1 = "") {
             Write-Host ("  {0,-14} {1,-9} {2,-18} {3,-16} {4}" -f $h.name,$h.os,$h.ip,$h.user,$h.date)
         }
         Write-Host ""
-        wh "  $($known.Count) host(s)  ·  'killport shutdown <name>' to shut down  ·  'killport shutdown delete <name>' to remove" DarkGray
+        wh "  $($known.Count) host(s)  ·  'killport shutdown <name>' to shut down  ·  killport shutdown delete '<name>' to remove" DarkGray
+        $sdSpaced = $known | Where-Object { $_.name -match ' ' } | Select-Object -First 1
+        if ($sdSpaced) { wh "  Names with spaces need single quotes — e.g.: killport shutdown delete '$($sdSpaced.name)'" Yellow }
         Write-Host ""; return
     }
 
@@ -3437,6 +3441,7 @@ if (-not $Command) {
     Write-Host "  killport ssh               generate a token so another machine can SSH in"
     Write-Host "  killport ssh ks:<token>    accept a token — adds their key, enables SSH"
     Write-Host "  killport ssh list          show all saved SSH connections"
+    Write-Host "  killport ssh delete <name> remove a saved SSH connection"
     Write-Host "  killport ssh <name>        ssh to a saved connection using your key"
     Write-Host ""
     Write-Host "  *** WAKE ON LAN ***"
@@ -3444,12 +3449,14 @@ if (-not $Command) {
     Write-Host "  killport wol <name>        wake a saved host by name"
     Write-Host "  killport wol save <n> <mac> [ip]  save a host for quick wake"
     Write-Host "  killport wol list          show saved WoL hosts"
+    Write-Host "  killport wol delete <name> remove a saved WoL host"
     Write-Host ""
     Write-Host "  *** SHUTDOWN & RESTART ***"
     Write-Host "  killport shutdown          scan network and pick a machine to shut down"
     Write-Host "  killport shutdown <ip>     shut down a remote machine via SSH"
     Write-Host "  killport shutdown <name>   shut down a saved host by name"
     Write-Host "  killport shutdown list     show all saved shutdown hosts"
+    Write-Host "  killport shutdown delete <name>  remove a saved shutdown host"
     Write-Host "  killport restart           scan network and pick a machine to restart"
     Write-Host "  killport restart <ip>      restart a remote machine via SSH"
     Write-Host "  killport restart <name>    restart a saved host by name"
