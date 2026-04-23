@@ -430,65 +430,208 @@ function Uninstall-Killport {
         wh "Re-run as Administrator: right-click PowerShell → Run as administrator" Yellow; exit 1
     }
 
+    function Ask-No {
+        param([string]$Prompt)
+        Write-Host -NoNewline "  $Prompt [y/N] -> "
+        $a = (Read-Host).Trim().ToLower()
+        return $a -eq 'y'
+    }
+
+    function Secure-Remove {
+        param([string]$Path)
+        if (-not (Test-Path $Path)) { return }
+        try {
+            $bytes = [System.IO.File]::ReadAllBytes($Path)
+            $rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
+            for ($pass = 0; $pass -lt 3; $pass++) {
+                $rng.GetBytes($bytes)
+                [System.IO.File]::WriteAllBytes($Path, $bytes)
+            }
+            $rng.Dispose()
+        } catch {}
+        Remove-Item $Path -Force -ErrorAction SilentlyContinue
+    }
+
     Write-Host ""
     wh "  killport uninstall" Cyan; Write-Rule; Write-Host ""
 
-    $dataFiles = @(
-        "$env:APPDATA\killport\ssh_known",
-        "$env:APPDATA\killport\wol_hosts",
-        "$env:APPDATA\killport\shutdown_hosts",
-        "$env:USERPROFILE\.killport\id_ed25519",
-        "$env:ProgramData\killport\attack.conf",
-        "$env:ProgramData\killport\attack.log"
-    ) | Where-Object { Test-Path $_ }
+    # ── Section 1: Installed tools ───────────────────────────
+    wh "  Installed tools" White; Write-Host ""
 
-    wh "  Keep killport.bat so you can reinstall with just " White -nl:$false
-    wh "killport setup" Cyan -nl:$false
-    wh "? " White -nl:$false
-    wh "[Y/n] " DarkGray -nl:$false
-    $keepBat = (Read-Host).Trim().ToLower() -ne 'n'
-    Write-Host ""
+    $removeNmap    = $false
+    $removeHashcat = $false
+    $foundAnyTool  = $false
 
-    $keepData = $true
-    if ($dataFiles.Count -gt 0) {
-        wh "  Saved data found:" DarkGray
-        $dataFiles | ForEach-Object { wh "    $_" DarkGray }
+    if (Get-Command nmap -ErrorAction SilentlyContinue) {
+        $foundAnyTool = $true
+        wh "  * nmap    $((Get-Command nmap).Source)" DarkGray
+        $removeNmap = Ask-No "Uninstall nmap?"
         Write-Host ""
-        wh "  Keep saved connections, hosts, and logs? " White -nl:$false
-        wh "[Y/n] " DarkGray -nl:$false
-        $ans = (Read-Host).Trim().ToLower()
-        if ($ans -eq 'n') { $keepData = $false }
+    }
+    if (Get-Command hashcat -ErrorAction SilentlyContinue) {
+        $foundAnyTool = $true
+        wh "  * hashcat $((Get-Command hashcat).Source)" DarkGray
+        $removeHashcat = Ask-No "Uninstall hashcat?"
+        Write-Host ""
+    }
+    if (-not $foundAnyTool) { wh "  none found" DarkGray; Write-Host "" }
+
+    # ── Section 2: Saved data & config ───────────────────────
+    wh "  Saved data & config" White; Write-Host ""
+
+    $fileDecisions = @{}   # path -> bool (delete?)
+
+    function Ask-File {
+        param([string]$Label, [string]$Path, [string]$Note = "", [bool]$Sensitive = $false)
+        if (-not (Test-Path $Path)) { return }
+        $suffix = if ($Note) { "  $Note" } else { "" }
+        wh "  * $Label$suffix" DarkGray
+        if ($Sensitive) {
+            if (Ask-No "      Delete? (sensitive — requires confirmation)") {
+                wh "    This will permanently destroy $Path via 3-pass overwrite." Red
+                if (Ask-No "      Are you sure? This cannot be undone") {
+                    $fileDecisions[$Path] = $true
+                } else {
+                    wh "    Kept." DarkGray
+                    $fileDecisions[$Path] = $false
+                }
+            } else { $fileDecisions[$Path] = $false }
+        } else {
+            $fileDecisions[$Path] = (Ask-No "      Delete?")
+        }
         Write-Host ""
     }
 
-    Write-Host "Uninstalling killport..."
+    Ask-File "attack.conf  (Ollama host + model)"   "$env:ProgramData\killport\attack.conf"
+    Ask-File "attack.log   (pentest history)"        "$env:ProgramData\killport\attack.log"
+    Ask-File "ssh_known    (saved SSH connections)"  "$env:APPDATA\killport\ssh_known"
+    Ask-File "wol_hosts    (Wake-on-LAN hosts)"      "$env:APPDATA\killport\wol_hosts"
+    Ask-File "shutdown_hosts"                        "$env:APPDATA\killport\shutdown_hosts"
+    Ask-File "id_ed25519   (SSH private key)"        "$env:USERPROFILE\.killport\id_ed25519"    "(!) 3-pass secure erase" $true
+    Ask-File "id_ed25519.pub"                        "$env:USERPROFILE\.killport\id_ed25519.pub" "(!) 3-pass secure erase" $true
 
+    $removeProgramData = $false
+    $removeAppData     = $false
+    $removeKillportDir = $false
+    if (Test-Path "$env:ProgramData\killport") {
+        $removeProgramData = Ask-No "  Remove folder  $env:ProgramData\killport\"
+        Write-Host ""
+    }
+    if (Test-Path "$env:APPDATA\killport") {
+        $removeAppData = Ask-No "  Remove folder  $env:APPDATA\killport\"
+        Write-Host ""
+    }
+    if (Test-Path "$env:USERPROFILE\.killport") {
+        $removeKillportDir = Ask-No "  Remove folder  $env:USERPROFILE\.killport\"
+        Write-Host ""
+    }
+
+    # ── Section 3: System config ─────────────────────────────
+    wh "  System config" White; Write-Host ""
+    $cleanFw  = $false
+    $cleanBat = $false
     $rules = Get-NetFirewallRule -DisplayName "killport-*" -ErrorAction SilentlyContinue
-    if ($rules) { $rules | Remove-NetFirewallRule; wh "  Removed $($rules.Count) firewall rule(s)" DarkGray }
-
+    if ($rules) {
+        wh "  * $($rules.Count) killport firewall rule(s)" DarkGray
+        $cleanFw = Ask-No "  Remove firewall rules?"
+        Write-Host ""
+    }
     $bat = "$env:SystemRoot\System32\killport.bat"
     if (Test-Path $bat) {
-        if ($keepBat) {
-            wh "  Kept $bat" DarkGray
-        } else {
-            # Deferred delete: cmd.exe holds the bat open while running it, so deleting it
-            # directly causes "batch file cannot be found". Schedule deletion after exit.
-            Start-Process cmd -ArgumentList "/c","ping 127.0.0.1 -n 2 >nul & del `"$bat`"" -WindowStyle Hidden
-            wh "  Removed $bat" DarkGray
+        wh "  * $bat" DarkGray
+        $cleanBat = Ask-No "  Remove killport.bat?"
+        Write-Host ""
+    }
+    if (-not $rules -and -not (Test-Path $bat)) { wh "  none found" DarkGray; Write-Host "" }
+
+    # ── Summary ──────────────────────────────────────────────
+    wh "  Summary - will be removed:" White; Write-Host ""
+    $anythingSelected = $false
+
+    if ($removeNmap)    { wh "  x  nmap"    Red; $anythingSelected = $true }
+    if ($removeHashcat) { wh "  x  hashcat" Red; $anythingSelected = $true }
+
+    foreach ($p in $fileDecisions.Keys) {
+        if ($fileDecisions[$p]) {
+            $tag = if ($p -match 'id_ed25519') { "  (secure erase)" } else { "" }
+            wh "  x  $p$tag" Red
+            $anythingSelected = $true
+        }
+    }
+    if ($removeProgramData) { wh "  x  $env:ProgramData\killport\" Red; $anythingSelected = $true }
+    if ($removeAppData)     { wh "  x  $env:APPDATA\killport\" Red;     $anythingSelected = $true }
+    if ($removeKillportDir) { wh "  x  $env:USERPROFILE\.killport\" Red; $anythingSelected = $true }
+    if ($cleanFw)           { wh "  x  firewall rules" Red;              $anythingSelected = $true }
+    if ($cleanBat)          { wh "  x  $bat" Red;                        $anythingSelected = $true }
+    wh "  x  killport  $env:ProgramData\killport\killport.ps1" Red
+    Write-Host ""
+
+    if (-not $anythingSelected) {
+        wh "  (no tools or data selected - only killport itself will be removed)" DarkGray
+        Write-Host ""
+    }
+
+    if (-not (Ask-No "  Proceed?")) {
+        Write-Host ""; wh "  Aborted." DarkGray; Write-Host ""; return
+    }
+    Write-Host ""
+
+    # ── Execute ──────────────────────────────────────────────
+    $pkgMgr = if (Get-Command choco -ErrorAction SilentlyContinue) { "choco" }
+               elseif (Get-Command winget -ErrorAction SilentlyContinue) { "winget" }
+               else { $null }
+
+    if ($removeNmap -and $pkgMgr) {
+        if ($pkgMgr -eq "choco")  { & choco uninstall nmap -y 2>$null }
+        elseif ($pkgMgr -eq "winget") { & winget uninstall --id Insecure.Nmap 2>$null }
+        wh "  Removed nmap" DarkGray
+    }
+    if ($removeHashcat -and $pkgMgr) {
+        if ($pkgMgr -eq "choco")  { & choco uninstall hashcat -y 2>$null }
+        elseif ($pkgMgr -eq "winget") { & winget uninstall --id hashcat.hashcat 2>$null }
+        wh "  Removed hashcat" DarkGray
+    }
+
+    foreach ($p in $fileDecisions.Keys) {
+        if (-not $fileDecisions[$p]) { continue }
+        if ($p -match 'id_ed25519') {
+            Secure-Remove $p
+            wh "  Securely erased $p" DarkGray
+        } elseif (Test-Path $p) {
+            Remove-Item $p -Force
+            wh "  Removed $p" DarkGray
         }
     }
 
-    $impl = "$env:ProgramData\killport"
+    if ($removeProgramData -and (Test-Path "$env:ProgramData\killport")) {
+        Remove-Item "$env:ProgramData\killport" -Recurse -Force
+        wh "  Removed $env:ProgramData\killport" DarkGray
+    }
+    if ($removeAppData -and (Test-Path "$env:APPDATA\killport")) {
+        Remove-Item "$env:APPDATA\killport" -Recurse -Force
+        wh "  Removed $env:APPDATA\killport" DarkGray
+    }
+    if ($removeKillportDir -and (Test-Path "$env:USERPROFILE\.killport")) {
+        Remove-Item "$env:USERPROFILE\.killport" -Recurse -Force
+        wh "  Removed $env:USERPROFILE\.killport" DarkGray
+    }
+
+    if ($cleanFw -and $rules) {
+        $rules | Remove-NetFirewallRule
+        wh "  Removed $($rules.Count) firewall rule(s)" DarkGray
+    }
+
+    # killport.ps1
+    $impl = "$env:ProgramData\killport\killport.ps1"
     if (Test-Path $impl) {
-        if ($keepData) {
-            # remove only the script, leave config/logs
-            Remove-Item "$impl\killport.ps1" -Force -ErrorAction SilentlyContinue
-            wh "  Removed $impl\killport.ps1" DarkGray
-            wh "  Kept $impl (config + logs preserved)" DarkGray
-        } else {
-            Remove-Item $impl -Recurse -Force
-            wh "  Removed $impl" DarkGray
-        }
+        Remove-Item $impl -Force -ErrorAction SilentlyContinue
+        wh "  Removed $impl" DarkGray
+    }
+
+    # killport.bat — deferred delete (cmd.exe holds it open)
+    if ($cleanBat -and (Test-Path $bat)) {
+        Start-Process cmd -ArgumentList "/c","ping 127.0.0.1 -n 2 >nul & del `"$bat`"" -WindowStyle Hidden
+        wh "  Removed $bat" DarkGray
     }
 
     @(
@@ -496,24 +639,8 @@ function Uninstall-Killport {
         "$env:USERPROFILE\AppData\Local\Microsoft\WindowsApps\killport.bat"
     ) | Where-Object { Test-Path $_ } | ForEach-Object { Remove-Item $_ -Force; wh "  Removed $_" DarkGray }
 
-    if (-not $keepData) {
-        @(
-            "$env:APPDATA\killport",
-            "$env:USERPROFILE\.killport"
-        ) | Where-Object { Test-Path $_ } | ForEach-Object { Remove-Item $_ -Recurse -Force; wh "  Removed $_" DarkGray }
-    } else {
-        wh "  Kept $env:APPDATA\killport (SSH + WoL + shutdown hosts)" DarkGray
-        wh "  Kept $env:USERPROFILE\.killport (SSH keys)" DarkGray
-    }
-
     Write-Host ""
-    if (-not $keepBat -and -not $keepData) {
-        wh "killport uninstalled. No trace left." Green
-    } elseif ($keepData) {
-        wh "killport uninstalled." Green
-        wh "Your data will be picked up automatically on next install." DarkGray
-    } else {
-        wh "killport uninstalled." Green
+    wh "  Done.  killport has been uninstalled." Green
     }
     Write-Host ""
 }
