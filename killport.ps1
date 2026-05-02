@@ -6,7 +6,7 @@ param(
     [Parameter(Mandatory=$false, Position=4)] [string]$Arg4
 )
 
-$VERSION = "1.10.46"
+$VERSION = "1.10.47"
 $REPO    = "skosari/killport-win"
 $RAW     = "https://raw.githubusercontent.com/$REPO/main"
 
@@ -2260,17 +2260,16 @@ function Invoke-WolDispatch([string]$subcmd, [string]$arg1, [string]$arg2, [stri
         }
         foreach ($ip_ in $pingTasks.Keys) {
             try {
-                if ($pingTasks[$ip_].GetAwaiter().GetResult().Status -eq 'Success') {
-                    $arpOut = (arp -a $ip_ 2>$null) -join "`n"
-                    if ($arpOut -match '([0-9a-f]{2}[-:][0-9a-f]{2}[-:][0-9a-f]{2}[-:][0-9a-f]{2}[-:][0-9a-f]{2}[-:][0-9a-f]{2})') {
-                        $rmac = $Matches[1].ToLower() -replace '-',':'
-                        if ($savedMacs -contains $rmac) { continue }
-                        $idx++
-                        $entries.Add(@{ mac=$rmac; ip=$ip_; name="?" })
-                        wh "  $($idx.ToString().PadLeft(2))" White -nl:$false
-                        Write-Host "  ?" -NoNewline; Write-Host ("".PadRight(24)) -NoNewline
-                        wh "  $ip_" Green -nl:$false; wh "  $rmac" DarkGray
-                    }
+                $pingTasks[$ip_].GetAwaiter().GetResult() | Out-Null  # primes ARP cache even if ICMP blocked
+                $arpOut = (arp -a $ip_ 2>$null) -join "`n"
+                if ($arpOut -match '([0-9a-f]{2}[-:][0-9a-f]{2}[-:][0-9a-f]{2}[-:][0-9a-f]{2}[-:][0-9a-f]{2}[-:][0-9a-f]{2})') {
+                    $rmac = $Matches[1].ToLower() -replace '-',':'
+                    if ($savedMacs -contains $rmac) { continue }
+                    $idx++
+                    $entries.Add(@{ mac=$rmac; ip=$ip_; name="?" })
+                    wh "  $($idx.ToString().PadLeft(2))" White -nl:$false
+                    Write-Host "  ?" -NoNewline; Write-Host ("".PadRight(24)) -NoNewline
+                    wh "  $ip_" Green -nl:$false; wh "  $rmac" DarkGray
                 }
             } catch {}
             $pingObjs[$ip_].Dispose()
