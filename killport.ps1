@@ -6,7 +6,7 @@ param(
     [Parameter(Mandatory=$false, Position=4)] [string]$Arg4
 )
 
-$VERSION = "1.10.48"
+$VERSION = "1.10.62"
 $REPO    = "skosari/killport-win"
 $RAW     = "https://raw.githubusercontent.com/$REPO/main"
 
@@ -397,6 +397,23 @@ function Kill-Port($p) {
 # ── update ───────────────────────────────────────────────────────────────────
 
 function Update-Killport {
+    $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+    if (-not $isAdmin) {
+        $ps1 = if ($PSCommandPath) { $PSCommandPath } else { "C:\ProgramData\killport\killport.ps1" }
+        wh "  Elevation required — launching as Administrator..." DarkGray
+        try {
+            Start-Process powershell -Verb RunAs -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$ps1`" update" -Wait -ErrorAction Stop
+        } catch {
+            Write-Host ""
+            wh "  Could not auto-elevate. To update, open an Admin terminal and run:" Yellow
+            Write-Host ""
+            wh "    Right-click PowerShell or CMD  →  Run as administrator" White
+            wh "    Then run: killport update" White
+            Write-Host ""
+        }
+        exit
+    }
+
     Write-Host "Checking for updates..."
     $remote = Get-RemoteVersion
     if (-not $remote) { wh "Could not reach GitHub." Yellow; exit 1 }
@@ -404,22 +421,28 @@ function Update-Killport {
     Write-Host "Updating $VERSION " -NoNewline; wh "→" Yellow -nl:$false; Write-Host " $remote..."
 
     $cb = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
+    $ok = $true
 
     # Update bat wrapper in System32
     $batPath = (Get-Command killport -ErrorAction SilentlyContinue).Source
     if ($batPath -and $batPath.EndsWith('.bat')) {
-        $content = (Invoke-WebRequest -Uri "$RAW/killport.bat?_=$cb" -UseBasicParsing).Content
-        $content = $content -replace "`r`n","`n" -replace "`n","`r`n"
-        [System.IO.File]::WriteAllText($batPath, $content, (New-Object System.Text.UTF8Encoding $False))
+        try {
+            $content = (Invoke-WebRequest -Uri "$RAW/killport.bat?_=$cb" -UseBasicParsing).Content
+            $content = $content -replace "`r`n","`n" -replace "`n","`r`n"
+            [System.IO.File]::WriteAllText($batPath, $content, (New-Object System.Text.UTF8Encoding $False))
+        } catch { wh "  Failed to update $batPath`: $_" Red; $ok = $false }
     }
 
     # Update this ps1 implementation
     $ps1Path = $PSCommandPath
     if (-not $ps1Path) { $ps1Path = "C:\ProgramData\killport\killport.ps1" }
-    $content = (Invoke-WebRequest -Uri "$RAW/killport.ps1?_=$cb" -UseBasicParsing).Content
-    [System.IO.File]::WriteAllText($ps1Path, $content, (New-Object System.Text.UTF8Encoding $True))
+    try {
+        $content = (Invoke-WebRequest -Uri "$RAW/killport.ps1?_=$cb" -UseBasicParsing).Content
+        [System.IO.File]::WriteAllText($ps1Path, $content, (New-Object System.Text.UTF8Encoding $True))
+    } catch { wh "  Failed to update $ps1Path`: $_" Red; $ok = $false }
 
-    wh "Updated to v$remote. Run killport to confirm." Green
+    if ($ok) { wh "Updated to v$remote. Run killport to confirm." Green }
+    else { wh "Update incomplete — some files could not be written." Red }
 }
 
 # ── uninstall ─────────────────────────────────────────────────────────────────
@@ -505,6 +528,7 @@ function Uninstall-Killport {
     Ask-File "attack.conf  (Ollama host + model)"   "$env:ProgramData\killport\attack.conf"
     Ask-File "attack.log   (pentest history)"        "$env:ProgramData\killport\attack.log"
     Ask-File "ssh_known    (saved SSH connections)"  "$env:APPDATA\killport\ssh_known"
+    Ask-File "vnc_known    (saved VNC connections)"  "$env:APPDATA\killport\vnc_known"
     Ask-File "wol_hosts    (Wake-on-LAN hosts)"      "$env:APPDATA\killport\wol_hosts"
     Ask-File "shutdown_hosts"                        "$env:APPDATA\killport\shutdown_hosts"
     Ask-File "id_ed25519   (SSH private key)"        "$env:USERPROFILE\.killport\id_ed25519"    "(!) 3-pass secure erase" $true
@@ -1372,8 +1396,45 @@ function Invoke-StressDispatch($sub) {
 
 # ── scan ─────────────────────────────────────────────────────────────────────
 
+function Invoke-NetScan {
+    $base = Get-LocalSubnet
+    if (-not $base) { wh "  Could not determine local subnet." Yellow; Write-Host ""; return }
+    Write-Host ""
+    wh "  killport scan" Cyan; Write-Rule; Write-Host ""
+    wh "  Scanning ${base}.0/24 ..." DarkGray; Write-Host ""
+
+    $pingObjs = [System.Collections.Generic.List[System.Net.NetworkInformation.Ping]]::new()
+    $pingTasks = [System.Collections.Generic.List[System.Threading.Tasks.Task]]::new()
+    1..254 | ForEach-Object {
+        $p = New-Object System.Net.NetworkInformation.Ping
+        $pingObjs.Add($p)
+        $pingTasks.Add($p.SendPingAsync("${base}.$_", 500))
+    }
+    [System.Threading.Tasks.Task]::WaitAll($pingTasks.ToArray())
+    $pingObjs | ForEach-Object { $_.Dispose() }
+
+    $localIp = (Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue |
+        Where-Object { $_.IPAddress -match "^${base}\." } | Select-Object -First 1).IPAddress
+    $found = 0
+    foreach ($line in (arp -a 2>$null)) {
+        if ($line -match "^\s+($([regex]::Escape($base))\.\d+)\s+((?:[\da-f]{2}[:-]){5}[\da-f]{2})\s+dynamic") {
+            $ip_  = $Matches[1]
+            $rmac = $Matches[2].ToLower() -replace '-',':'
+            if ($localIp -and $ip_ -eq $localIp) { continue }
+            $found++
+            wh ("  {0,3}  " -f $found) DarkGray -nl:$false
+            wh ("{0,-15}" -f $ip_) Green -nl:$false
+            wh "  $rmac" DarkGray
+        }
+    }
+    Write-Host ""
+    if ($found -eq 0) { wh "  No hosts found on ${base}.0/24." Yellow }
+    else { wh "  $found host(s) found on ${base}.0/24." DarkGray }
+    Write-Host ""
+}
+
 function Invoke-Scan($target, $mode) {
-    if (-not $target) { Write-Host ""; wh "  Usage: killport scan <ip> [all]" Yellow; Write-Host ""; return }
+    if (-not $target) { Invoke-NetScan; return }
     $nmap = Get-CmdPath nmap
     if (-not $nmap) { wh "  nmap required. Download from https://nmap.org/download.html" Yellow; return }
     Write-Host ""
@@ -2249,29 +2310,32 @@ function Invoke-WolDispatch([string]$subcmd, [string]$arg1, [string]$arg2, [stri
         if (-not $base) { wh "  Could not determine local subnet." Yellow; Write-Host ""; return }
         wh "  Scanning ${base}.0/24 ..." DarkGray; Write-Host ""
 
-        $pingObjs = [ordered]@{}
-        $pingTasks = [ordered]@{}
+        # Fire all 254 pings async at once — populates ARP cache, catches ICMP-blocked hosts
+        $pingObjs = [System.Collections.Generic.List[System.Net.NetworkInformation.Ping]]::new()
+        $pingTasks = [System.Collections.Generic.List[System.Threading.Tasks.Task]]::new()
         1..254 | ForEach-Object {
-            $ip_ = "${base}.$_"
             $p = New-Object System.Net.NetworkInformation.Ping
-            $pingObjs[$ip_] = $p
-            $pingTasks[$ip_] = $p.SendPingAsync($ip_, 500)
+            $pingObjs.Add($p)
+            $pingTasks.Add($p.SendPingAsync("${base}.$_", 500))
         }
-        foreach ($ip_ in $pingTasks.Keys) {
-            try {
-                $pingTasks[$ip_].GetAwaiter().GetResult() | Out-Null  # primes ARP cache even if ICMP blocked
-                $arpOut = (arp -a $ip_ 2>$null) -join "`n"
-                if ($arpOut -match '([0-9a-f]{2}[-:][0-9a-f]{2}[-:][0-9a-f]{2}[-:][0-9a-f]{2}[-:][0-9a-f]{2}[-:][0-9a-f]{2})') {
-                    $rmac = $Matches[1].ToLower() -replace '-',':'
-                    if ($savedMacs -contains $rmac) { continue }
-                    $idx++
-                    $entries.Add(@{ mac=$rmac; ip=$ip_; name="?" })
-                    wh "  $($idx.ToString().PadLeft(2))" White -nl:$false
-                    Write-Host "  ?" -NoNewline; Write-Host ("".PadRight(24)) -NoNewline
-                    wh "  $ip_" Green -nl:$false; wh "  $rmac" DarkGray
-                }
-            } catch {}
-            $pingObjs[$ip_].Dispose()
+        [System.Threading.Tasks.Task]::WaitAll($pingTasks.ToArray())
+        $pingObjs | ForEach-Object { $_.Dispose() }
+
+        # Single full ARP dump — dynamic entries only, skips self
+        $localIp = (Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue |
+            Where-Object { $_.IPAddress -match "^${base}\." } | Select-Object -First 1).IPAddress
+        foreach ($line in (arp -a 2>$null)) {
+            if ($line -match "^\s+($([regex]::Escape($base))\.\d+)\s+((?:[\da-f]{2}[:-]){5}[\da-f]{2})\s+dynamic") {
+                $ip_  = $Matches[1]
+                $rmac = $Matches[2].ToLower() -replace '-',':'
+                if ($localIp -and $ip_ -eq $localIp) { continue }
+                if ($savedMacs -contains $rmac) { continue }
+                $idx++
+                $entries.Add(@{ mac=$rmac; ip=$ip_; name="?" })
+                wh "  $($idx.ToString().PadLeft(2))" White -nl:$false
+                Write-Host "  ?" -NoNewline; Write-Host ("".PadRight(24)) -NoNewline
+                wh "  $ip_" Green -nl:$false; wh "  $rmac" DarkGray
+            }
         }
         Write-Host ""
 
@@ -2649,6 +2713,221 @@ function Invoke-SshDispatch([string]$subcmd, [string]$arg1 = "") {
     }
 }
 
+# ── VNC ──────────────────────────────────────────────────────────────────────
+
+$VNC_KNOWN_FILE = "$env:APPDATA\killport\vnc_known"
+
+function Get-VncViewer {
+    $inPath = Get-Command vncviewer -ErrorAction SilentlyContinue
+    if ($inPath) { return $inPath.Source }
+    $fallback = "C:\Program Files\TigerVNC\vncviewer.exe"
+    if (Test-Path $fallback) { return $fallback }
+    return $null
+}
+
+function Get-VncKnown {
+    $list = @()
+    if (Test-Path $VNC_KNOWN_FILE) {
+        foreach ($line in (Get-Content $VNC_KNOWN_FILE)) {
+            if ($line -match '^\s*$' -or $line.StartsWith('#')) { continue }
+            $parts = $line -split '\|'
+            if ($parts.Count -ge 2) {
+                $list += [PSCustomObject]@{ name=$parts[0]; host=$parts[1] }
+            }
+        }
+    }
+    return $list
+}
+
+function Save-VncKnown([string]$name, [string]$addr) {
+    $dir = Split-Path $VNC_KNOWN_FILE
+    if (-not (Test-Path $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
+    $existing = @()
+    if (Test-Path $VNC_KNOWN_FILE) {
+        $existing = Get-Content $VNC_KNOWN_FILE | Where-Object { $_ -notmatch "^\s*$" -and -not $_.StartsWith('#') -and ($_ -split '\|')[0] -ne $name }
+    }
+    $existing += "$name|$addr"
+    $existing | Set-Content $VNC_KNOWN_FILE
+}
+
+function Invoke-VncDispatch([string]$subcmd, [string]$arg1 = "", [string]$arg2 = "") {
+
+    function Connect-Vnc([string]$target) {
+        $vnc = Get-VncViewer
+        if (-not $vnc) {
+            Write-Host ""
+            wh "  vncviewer not found." Red
+            wh "  Install TigerVNC: winget install TigerVNC.TigerVNC" DarkGray
+            Write-Host ""; return
+        }
+        # Convert host:port → host::port (TigerVNC double-colon = absolute port)
+        $connectStr = if ($target -match '^(.+):(\d+)$' -and $target -notmatch '::') {
+            "$($Matches[1])::$($Matches[2])"
+        } else { $target }
+        wh "  Launching VNC viewer..." DarkGray; Write-Host ""
+        & $vnc $connectStr
+    }
+
+    # ── list ──────────────────────────────────────────────────────────────────
+    if ($subcmd -eq 'list') {
+        Write-Host ""; wh "  VNC Saved Connections" Cyan; Write-Rule; Write-Host ""
+        $known = Get-VncKnown
+        if ($known.Count -eq 0) {
+            wh "  No saved connections yet." DarkGray
+            wh "  Run 'killport vnc save <name> <ip>' to add one." DarkGray
+            Write-Host ""; return
+        }
+        foreach ($e in $known) {
+            wh "  * " Green -nl:$false
+            wh ("{0,-20}" -f $e.name) White -nl:$false
+            wh "  $($e.host)" DarkGray
+        }
+        Write-Host ""
+        wh "  $($known.Count) connection(s)  ·  'killport vnc <name>' to connect  ·  'killport vnc delete <name>' to remove" DarkGray
+        Write-Host ""; return
+    }
+
+    # ── delete ────────────────────────────────────────────────────────────────
+    if ($subcmd -eq 'delete' -or $subcmd -eq 'remove') {
+        if (-not $arg1) { wh "`n  Usage: killport vnc delete <name>" Red; Write-Host ""; exit 1 }
+        if (Test-Path $VNC_KNOWN_FILE) {
+            $lines = @(Get-Content $VNC_KNOWN_FILE)
+            if ($lines | Where-Object { $_ -match "^$([regex]::Escape($arg1))\|" }) {
+                $filtered = @($lines | Where-Object { $_ -notmatch "^$([regex]::Escape($arg1))\|" })
+                if ($filtered.Count -eq 0) { Clear-Content $VNC_KNOWN_FILE } else { Set-Content $VNC_KNOWN_FILE -Value $filtered }
+                wh "`n  Removed '$arg1'." Green; Write-Host ""
+            } else { wh "`n  No saved connection named '$arg1'." Yellow; Write-Host "" }
+        } else { wh "`n  No saved connections file found." Yellow; Write-Host "" }
+        return
+    }
+
+    # ── save ──────────────────────────────────────────────────────────────────
+    if ($subcmd -eq 'save') {
+        if (-not $arg1 -or -not $arg2) { wh "`n  Usage: killport vnc save <name> <ip[:port]>" Red; Write-Host ""; exit 1 }
+        Save-VncKnown $arg1 $arg2
+        wh "`n  Saved '$arg1'  →  $arg2" Green
+        wh "  Connect with: killport vnc $arg1" DarkGray; Write-Host ""
+        return
+    }
+
+    # ── name or IP/host → connect ─────────────────────────────────────────────
+    if ($subcmd) {
+        $known = Get-VncKnown
+        $entry = $known | Where-Object { $_.name -eq $subcmd } | Select-Object -First 1
+        if ($entry) {
+            Write-Host ""; wh "  killport vnc  $subcmd  ($($entry.host))" Cyan; Write-Rule
+            Connect-Vnc $entry.host; return
+        }
+        Write-Host ""; wh "  killport vnc  $subcmd" Cyan; Write-Rule
+        Connect-Vnc $subcmd; return
+    }
+
+    # ── no-arg: show saved hosts + scan network ──────────────────────────────
+    Write-Host ""; wh "  killport vnc — Scan Network" Cyan; Write-Rule; Write-Host ""
+
+    $vncEntries = [System.Collections.Generic.List[string]]::new()
+    $vncIps     = [System.Collections.Generic.List[string]]::new()
+    $idx        = 0
+
+    # 1. Saved VNC hosts
+    foreach ($e in (Get-VncKnown)) {
+        $idx++
+        $vncEntries.Add($e.host)
+        $vncIps.Add(($e.host -split ':')[0])
+        wh "  $($idx.ToString().PadLeft(2))" White -nl:$false
+        wh "  ★ " Green -nl:$false; wh $e.name.PadRight(20) White -nl:$false
+        wh "  $($e.host)" DarkGray
+    }
+    if ($idx -gt 0) { Write-Host "" }
+
+    # 2. Live network scan — prefer remote LAN routed via VPN/TAP when connected
+    $base = $null
+    $vpnAdapter = Get-NetAdapter -ErrorAction SilentlyContinue |
+        Where-Object { $_.Status -eq 'Up' -and $_.InterfaceDescription -match 'TAP|tun|OpenVPN|WireGuard' } |
+        Select-Object -First 1
+    if ($vpnAdapter) {
+        $vpnIp = (Get-NetIPAddress -InterfaceIndex $vpnAdapter.InterfaceIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue |
+                  Select-Object -First 1).IPAddress
+        $vpnBase = if ($vpnIp) { $vpnIp -replace '\.\d+$','' } else { $null }
+        # Find a routed LAN behind the VPN — a route via this adapter that isn't the tunnel subnet itself
+        $lanRoute = Get-NetRoute -InterfaceIndex $vpnAdapter.InterfaceIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue |
+            Where-Object { $_.DestinationPrefix -notmatch '^(0\.0\.0\.0|128\.0\.0\.0|169\.)' -and
+                           $_.NextHop -ne '0.0.0.0' -and
+                           ($vpnBase -eq $null -or $_.DestinationPrefix -notmatch "^$([regex]::Escape($vpnBase))\.") } |
+            Select-Object -First 1
+        if ($lanRoute) {
+            $base = ($lanRoute.DestinationPrefix -replace '/\d+$','') -replace '\.\d+$',''
+        } elseif ($vpnIp) {
+            $base = $vpnBase
+        }
+    }
+    if (-not $base) { $base = (Get-OurIp) -replace '\.\d+$','' }
+    $isVpn = ($vpnAdapter -ne $null)
+    wh "  Scanning ${base}.0/24 ..." DarkGray; Write-Host ""
+
+    # Fire all 254 pings async — use longer timeout over VPN
+    $timeout = if ($isVpn) { 2000 } else { 500 }
+    $pingObjs  = [System.Collections.Generic.List[System.Net.NetworkInformation.Ping]]::new()
+    $pingTasks = [System.Collections.Generic.List[System.Threading.Tasks.Task]]::new()
+    $pingIps   = [System.Collections.Generic.List[string]]::new()
+    1..254 | ForEach-Object {
+        $ip_ = "${base}.$_"
+        $p = New-Object System.Net.NetworkInformation.Ping
+        $pingObjs.Add($p); $pingTasks.Add($p.SendPingAsync($ip_, $timeout)); $pingIps.Add($ip_)
+    }
+    [System.Threading.Tasks.Task]::WaitAll($pingTasks.ToArray())
+
+    if ($isVpn) {
+        # Over a routed VPN, ARP won't have remote hosts — use ping responses directly
+        for ($i = 0; $i -lt $pingTasks.Count; $i++) {
+            $pingObjs[$i].Dispose()
+            if ($pingTasks[$i].Result.Status -eq [System.Net.NetworkInformation.IPStatus]::Success) {
+                $lip = $pingIps[$i]
+                if ($vncIps -contains $lip) { continue }
+                $idx++
+                $vncEntries.Add($lip); $vncIps.Add($lip)
+                wh "  $($idx.ToString().PadLeft(2))" White -nl:$false
+                Write-Host ("  {0,-22}  {1}" -f '?', $lip)
+            }
+        }
+    } else {
+        # Local network — use ARP to catch ICMP-blocked hosts too
+        $pingObjs | ForEach-Object { $_.Dispose() }
+        $localIp = Get-OurIp
+        foreach ($line in (arp -a 2>$null)) {
+            if ($line -match "^\s+($([regex]::Escape($base))\.\d+)\s+((?:[\da-f]{2}[:-]){5}[\da-f]{2})\s+dynamic") {
+                $lip = $Matches[1]
+                if ($lip -eq $localIp -or $vncIps -contains $lip) { continue }
+                $idx++
+                $vncEntries.Add($lip); $vncIps.Add($lip)
+                wh "  $($idx.ToString().PadLeft(2))" White -nl:$false
+                Write-Host ("  {0,-22}  {1}" -f '?', $lip)
+            }
+        }
+    }
+    Write-Host ""
+
+    if ($vncEntries.Count -eq 0) { wh "  No hosts found." DarkGray; Write-Host ""; return }
+
+    $pick = (Read-Host "  Pick a number (1-$idx)").Trim()
+    if (-not ($pick -match '^\d+$') -or [int]$pick -lt 1 -or [int]$pick -gt $idx) {
+        wh "  Invalid selection." Red; Write-Host ""; exit 1
+    }
+    $chosen = $vncEntries[[int]$pick - 1]
+    Write-Host ""
+    Connect-Vnc $chosen
+
+    # Offer to save if it was a scan result (not already saved)
+    $alreadySaved = (Get-VncKnown) | Where-Object { $_.host -eq $chosen -or ($_.host -split ':')[0] -eq $chosen }
+    if (-not $alreadySaved) {
+        $saveName = (Read-Host "  Save as (leave blank to skip)").Trim()
+        if ($saveName) {
+            Save-VncKnown $saveName $chosen
+            wh "  Saved as '$saveName'. Use: killport vnc $saveName" Green; Write-Host ""
+        }
+    }
+}
+
 # ── shutdown ─────────────────────────────────────────────────────────────────
 
 function Invoke-ShutdownDispatch([string]$subcmd, [string]$arg1 = "") {
@@ -2778,46 +3057,112 @@ function Invoke-ShutdownDispatch([string]$subcmd, [string]$arg1 = "") {
         Write-Host ""; exit 1
     }
 
-    # ── no-arg: scan network and pick ────────────────────────────────────────
+    # ── no-arg: show saved hosts + scan network ──────────────────────────────
     if (-not $subcmd) {
         Write-Host ""; wh "  killport shutdown — Scan Network" Cyan; Write-Rule; Write-Host ""
-        $localIp = Get-OurIp
-        $base    = ($localIp -replace '\.\d+$', '')
-        wh "  Scanning $base.0/24..." DarkGray; Write-Host ""
 
-        # Ping sweep to populate ARP cache (fire-and-forget)
-        $jobs = 1..254 | ForEach-Object {
-            $ip = "$base.$_"
-            Start-Job -ScriptBlock { param($h) Test-Connection $h -Count 1 -Quiet -ErrorAction SilentlyContinue } -ArgumentList $ip
+        # Entries list: [ip, os, user, name, needsAsk]
+        $sdEntries = [System.Collections.Generic.List[hashtable]]::new()
+        $sdIps     = [System.Collections.Generic.List[string]]::new()
+        $idx       = 0
+
+        # 1. Saved shutdown hosts (have OS + user — no prompts needed)
+        foreach ($h in (Get-SdKnown)) {
+            $idx++
+            $sdEntries.Add(@{ ip=$h.ip; os=$h.os; user=$h.user; name=$h.name; needsAsk=$false })
+            $sdIps.Add($h.ip)
+            wh "  $($idx.ToString().PadLeft(2))" White -nl:$false
+            wh "  ★ " Green -nl:$false; wh $h.name.PadRight(20) White -nl:$false
+            wh ("  {0,-15}" -f $h.ip) Green -nl:$false; wh "  $($h.os)  $($h.user)" DarkGray
         }
-        $null = $jobs | Wait-Job
-        Remove-Job $jobs -Force
+        if ($idx -gt 0) { Write-Host "" }
 
-        # Check ARP for dynamic entries (detects Windows even when ICMP is blocked)
-        $liveHosts = @()
-        $count = 0
-        $arpOut = arp -a 2>$null
-        foreach ($line in $arpOut) {
-            if ($line -match "^\s+($([regex]::Escape($base))\.\d+)\s+([\da-f]{2}[:-]){5}[\da-f]{2}\s+dynamic") {
-                $ip = $Matches[1]
-                if ($ip -ne $localIp) {
-                    $count++
-                    $liveHosts += $ip
-                    wh ("  {0,3}  {1}" -f $count, $ip) Gray
-                }
+        # 2. Saved WOL hosts with an IP not already listed (shows offline machines)
+        foreach ($entry in (Get-WolHosts)) {
+            $parts = $entry -split ' '
+            if ($parts.Count -ge 3 -and $parts[2]) {
+                $wip = $parts[2]; $wname = $parts[0]
+                if ($sdIps -contains $wip) { continue }
+                $idx++
+                $sdEntries.Add(@{ ip=$wip; os=''; user=''; name=$wname; needsAsk=$true })
+                $sdIps.Add($wip)
+                wh "  $($idx.ToString().PadLeft(2))" White -nl:$false
+                wh "  ★ " Green -nl:$false; wh $wname.PadRight(20) White -nl:$false
+                wh ("  {0,-15}" -f $wip) Green -nl:$false; wh "  (from wol list)" DarkGray
             }
         }
+        if ($sdEntries.Count -gt 0) { Write-Host "" }
 
-        if ($liveHosts.Count -eq 0) {
-            wh "  No hosts found on $base.0/24." DarkGray; Write-Host ""; return
+        # 3. Live network scan for additional hosts
+        $localIp = Get-OurIp
+        $base    = ($localIp -replace '\.\d+$', '')
+        wh "  Scanning ${base}.0/24 ..." DarkGray; Write-Host ""
+
+        $pingObjs  = [System.Collections.Generic.List[System.Net.NetworkInformation.Ping]]::new()
+        $pingTasks = [System.Collections.Generic.List[System.Threading.Tasks.Task]]::new()
+        1..254 | ForEach-Object {
+            $p = New-Object System.Net.NetworkInformation.Ping
+            $pingObjs.Add($p); $pingTasks.Add($p.SendPingAsync("${base}.$_", 500))
+        }
+        [System.Threading.Tasks.Task]::WaitAll($pingTasks.ToArray())
+        $pingObjs | ForEach-Object { $_.Dispose() }
+
+        foreach ($line in (arp -a 2>$null)) {
+            if ($line -match "^\s+($([regex]::Escape($base))\.\d+)\s+((?:[\da-f]{2}[:-]){5}[\da-f]{2})\s+dynamic") {
+                $lip = $Matches[1]
+                if ($lip -eq $localIp -or $sdIps -contains $lip) { continue }
+                $idx++
+                $sdEntries.Add(@{ ip=$lip; os=''; user=''; name='?'; needsAsk=$true })
+                $sdIps.Add($lip)
+                wh "  $($idx.ToString().PadLeft(2))" White -nl:$false
+                Write-Host ("  {0,-22}  {1}" -f '?', $lip)
+            }
         }
         Write-Host ""
-        $pick = (Read-Host "  Pick a number (1-$count)").Trim()
-        if (-not ($pick -match '^\d+$') -or [int]$pick -lt 1 -or [int]$pick -gt $count) {
+
+        if ($sdEntries.Count -eq 0) {
+            wh "  No hosts found." DarkGray; Write-Host ""; return
+        }
+
+        $pick = (Read-Host "  Pick a number (1-$idx)").Trim()
+        if (-not ($pick -match '^\d+$') -or [int]$pick -lt 1 -or [int]$pick -gt $idx) {
             wh "  Invalid selection." Red; Write-Host ""; exit 1
         }
-        $subcmd = $liveHosts[[int]$pick - 1]
+        $chosen = $sdEntries[[int]$pick - 1]
+        $subcmd = $chosen.ip
+
+        if (-not $chosen.needsAsk) {
+            # Saved shutdown host — go straight to shutdown, no prompts needed
+            Do-Shutdown $chosen.os $subcmd $chosen.user
+            Write-Host ""; return
+        }
+
+        # WOL host or live-scan host — ask OS/user once, then save automatically
+        $defaultName = $chosen.name
         Write-Host ""
+        wh "  killport shutdown uses SSH to send the shutdown command." DarkGray
+        wh "  It will generate an SSH key and walk you through authorizing it" DarkGray
+        wh "  on the remote machine — you only need to do this once." DarkGray
+        Write-Host ""
+        wh "  [m] macOS    [l] Linux    [w] Windows" DarkGray
+        $osChoice = (Read-Host "  OS (m/l/w)").ToLower().Trim()
+        $osName   = switch ($osChoice) { 'm'{'macos'} 'l'{'linux'} 'w'{'windows'} default{$osChoice} }
+        if ($osName -notin @('macos','linux','windows')) { wh "  Invalid OS." Red; Write-Host ""; exit 1 }
+        Write-Host ""
+        wh "  Enter the username you log in with on $($chosen.ip)." DarkGray
+        $defUser   = $env:USERNAME
+        $userInput = (Read-Host "  SSH username [$defUser]").Trim()
+        $sshUser   = if ($userInput) { $userInput } else { $defUser }
+        Do-Shutdown $osName $subcmd $sshUser
+        Write-Host ""
+        $savePrompt = if ($defaultName -ne '?') { "  Save as [$defaultName]" } else { "  Save as (leave blank to skip)" }
+        $saveInput  = (Read-Host $savePrompt).Trim()
+        $saveName   = if ($saveInput) { $saveInput } elseif ($defaultName -ne '?') { $defaultName } else { $null }
+        if ($saveName) {
+            Save-SdKnown $saveName $osName $subcmd $sshUser
+            wh "  Saved as '$saveName'. Use: killport shutdown $saveName" Green
+        }
+        Write-Host ""; return
     }
 
     # ── IP mode ──────────────────────────────────────────────────────────────
@@ -3442,6 +3787,14 @@ if (-not $Command) {
     Write-Host "  killport ssh delete <name> remove a saved SSH connection"
     Write-Host "  killport ssh <name>        ssh to a saved connection using your key"
     Write-Host ""
+    Write-Host "  *** VNC ***"
+    Write-Host "  killport vnc <ip>               connect to a VNC server (port 5900)"
+    Write-Host "  killport vnc <ip>:<port>        connect on a specific port"
+    Write-Host "  killport vnc <name>             connect to a saved VNC host"
+    Write-Host "  killport vnc save <name> <ip>   save a VNC connection by name"
+    Write-Host "  killport vnc list               show saved VNC hosts"
+    Write-Host "  killport vnc delete <name>      remove a saved VNC host"
+    Write-Host ""
     Write-Host "  *** WAKE ON LAN ***"
     Write-Host "  killport wol               scan network and wake or save host"
     Write-Host "  killport wol <name>        wake a saved host by name"
@@ -3506,6 +3859,7 @@ switch ($Command.ToLower()) {
     "dns"         { Invoke-DnsRecon $Port }
     "forward"     { Forward-Port $Port $Extra }
     "ssh"         { Invoke-SshDispatch $Port $Extra }
+    "vnc"         { Invoke-VncDispatch $Port $Extra $Arg3 }
     "setup"       { Invoke-SetupWizard }
     "shutdown"    { Invoke-ShutdownDispatch $Port $Extra }
     "restart"     { Invoke-RestartDispatch $Port }

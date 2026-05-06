@@ -9,7 +9,7 @@
 ╚═╝  ╚═╝╚═╝╚══════╝╚══════╝╚═╝      ╚═════╝ ╚═╝  ╚═╝   ╚═╝   
 </pre>
 
-**Kill ports · manage firewall · SSH easy connect · Wake on LAN · remote shutdown · network scanning — Windows**
+**Kill ports · manage firewall · SSH easy connect · VNC · Wake on LAN · remote shutdown · network scanning — Windows**
 
 Also available for [macOS](https://github.com/skosari/killport-mac) · [Linux](https://github.com/skosari/killport-linux) · [Windows CMD-only](https://github.com/skosari/killport-cmd)
 
@@ -91,6 +91,12 @@ Installs `killport.bat` to `System32` (always in PATH for CMD and PowerShell) an
 | `killport ssh ks:<token>` | Accept a token — adds their key and enables SSH access |
 | `killport ssh list` | Show all saved SSH connections |
 | `killport ssh delete <name>` | Remove a saved SSH connection |
+| `killport vnc <ip>` | Open a VNC session to an IP (port 5900) |
+| `killport vnc <ip>:<port>` | Open a VNC session on a specific port |
+| `killport vnc <name>` | Open a VNC session to a saved host |
+| `killport vnc save <name> <ip>` | Save a VNC host for quick connect |
+| `killport vnc list` | Show all saved VNC hosts |
+| `killport vnc delete <name>` | Remove a saved VNC host |
 | `killport status <port>` | Show if a port is open or closed |
 | `killport stress <ip:port>` | Authorized connection flood / stress test |
 | `killport uninstall` | Remove killport and all firewall rules |
@@ -516,6 +522,25 @@ killport ssh mini                        # SSH straight into your Mac Mini
 killport ssh desktop                     # SSH to your Windows desktop
 killport ssh delete mini                 # remove a saved connection
 killport ssh delete 'gaming desktop'     # use single quotes for names with spaces
+```
+
+---
+
+### VNC → `killport vnc`
+
+Connect to any VNC server by IP or saved name. Uses [TigerVNC](https://tigervnc.org) — install it first:
+
+```sh
+winget install TigerVNC.TigerVNC
+```
+
+```sh
+killport vnc 192.168.1.10              # connect to port 5900
+killport vnc 192.168.1.10:5901         # custom port
+killport vnc save mini 192.168.1.10    # save a host
+killport vnc mini                      # connect by name
+killport vnc list                      # show saved hosts
+killport vnc delete mini               # remove a saved host
 ```
 
 ---
