@@ -1,4 +1,4 @@
-param(
+﻿param(
     [Parameter(Mandatory=$false, Position=0)] [string]$Command,
     [Parameter(Mandatory=$false, Position=1)] [string]$Port,
     [Parameter(Mandatory=$false, Position=2)] [string]$Extra,
@@ -171,6 +171,30 @@ function Show-IP {
         wh "  │  " Cyan -nl:$false; Write-Host "$($pr.Adapter.Name)  " -NoNewline; wh "($($pr.Adapter.InterfaceDescription))" DarkGray
         wh "  │  " Cyan -nl:$false; wh "IPv4:  " White -nl:$false; wh $pr.IPv4 Green
         wh "  │  " Cyan -nl:$false; wh "MAC:   $($pr.Adapter.MacAddress)" DarkGray
+        wh "  └────────────────────────────────────────" Cyan
+        Write-Host ""
+    }
+
+    # VPN status
+    $vpnAdapter = Get-NetAdapter -ErrorAction SilentlyContinue |
+        Where-Object { $_.Status -eq 'Up' -and $_.InterfaceDescription -match 'TAP|tun|OpenVPN|WireGuard' } |
+        Select-Object -First 1
+    if ($vpnAdapter) {
+        $vpnIp = (Get-NetIPAddress -InterfaceIndex $vpnAdapter.InterfaceIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue |
+                  Select-Object -First 1).IPAddress
+        $vpnBase = if ($vpnIp) { $vpnIp -replace '\.\d+$','' } else { $null }
+        $lanRoutes = Get-NetRoute -InterfaceIndex $vpnAdapter.InterfaceIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue |
+            Where-Object { $_.DestinationPrefix -notmatch '^(0\.0\.0\.0|128\.0\.0\.0|169\.)' -and
+                           $_.NextHop -ne '0.0.0.0' -and
+                           ($vpnBase -eq $null -or $_.DestinationPrefix -notmatch "^$([regex]::Escape($vpnBase))\.") }
+        wh "  VPN  " Cyan -nl:$false; wh "(connected)" Green
+        wh "  ────────────────────────────────────" Cyan
+        wh "  ┌────────────────────────────────────────" Cyan
+        wh "  │  " Cyan -nl:$false; Write-Host "$($vpnAdapter.Name)  " -NoNewline; wh "($($vpnAdapter.InterfaceDescription))" DarkGray
+        if ($vpnIp) { wh "  │  " Cyan -nl:$false; wh "Tunnel IP:   " White -nl:$false; wh $vpnIp Green }
+        foreach ($r in $lanRoutes) {
+            wh "  │  " Cyan -nl:$false; wh "Remote LAN:  " White -nl:$false; wh $r.DestinationPrefix Yellow
+        }
         wh "  └────────────────────────────────────────" Cyan
         Write-Host ""
     }
@@ -2222,6 +2246,22 @@ $WOL_HOSTS_FILE = "$env:APPDATA\killport\wol_hosts"
 
 function Get-LocalSubnet {
     try {
+        # Prefer the remote LAN behind a VPN when connected
+        $vpnAdapter = Get-NetAdapter -ErrorAction SilentlyContinue |
+            Where-Object { $_.Status -eq 'Up' -and $_.InterfaceDescription -match 'TAP|tun|OpenVPN|WireGuard' } |
+            Select-Object -First 1
+        if ($vpnAdapter) {
+            $vpnIp   = (Get-NetIPAddress -InterfaceIndex $vpnAdapter.InterfaceIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue |
+                        Select-Object -First 1).IPAddress
+            $vpnBase = if ($vpnIp) { $vpnIp -replace '\.\d+$','' } else { $null }
+            $lanRoute = Get-NetRoute -InterfaceIndex $vpnAdapter.InterfaceIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue |
+                Where-Object { $_.DestinationPrefix -notmatch '^(0\.0\.0\.0|128\.0\.0\.0|169\.)' -and
+                               $_.NextHop -ne '0.0.0.0' -and
+                               ($vpnBase -eq $null -or $_.DestinationPrefix -notmatch "^$([regex]::Escape($vpnBase))\.") } |
+                Select-Object -First 1
+            if ($lanRoute) { return ($lanRoute.DestinationPrefix -replace '/\d+$','') -replace '\.\d+$','' }
+            if ($vpnIp)    { return $vpnBase }
+        }
         $ip = (Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue |
                Where-Object { $_.IPAddress -notmatch '^(127\.|169\.254\.)' -and $_.PrefixOrigin -ne 'WellKnown' } |
                Sort-Object { $_.InterfaceAlias -match 'Ethernet|Wi-Fi' } -Descending |
@@ -2453,6 +2493,15 @@ function Invoke-WolDispatch([string]$subcmd, [string]$arg1, [string]$arg2, [stri
 $SSH_KNOWN_FILE = "$env:APPDATA\killport\ssh_known"
 
 function Get-OurIp {
+    # Prefer VPN IP when connected — remote machines should connect via the VPN address
+    $vpnAdapter = Get-NetAdapter -ErrorAction SilentlyContinue |
+        Where-Object { $_.Status -eq 'Up' -and $_.InterfaceDescription -match 'TAP|tun|OpenVPN|WireGuard' } |
+        Select-Object -First 1
+    if ($vpnAdapter) {
+        $vpnIp = (Get-NetIPAddress -InterfaceIndex $vpnAdapter.InterfaceIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue |
+                  Select-Object -First 1).IPAddress
+        if ($vpnIp) { return $vpnIp }
+    }
     # Use the interface that owns the default gateway route — same logic as Show-IP
     $gwRoute = Get-NetRoute -DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinue |
                Sort-Object RouteMetric | Select-Object -First 1
@@ -2502,6 +2551,9 @@ function Invoke-SshDispatch([string]$subcmd, [string]$arg1 = "") {
     $kpDir   = "$env:USERPROFILE\.killport"
     $keyFile = "$kpDir\id_ed25519"
     $pubFile = "$kpDir\id_ed25519.pub"
+
+    # ── share / key exchange ──────────────────────────────────────────────────
+    if ($subcmd -eq 'share') { Invoke-SshShare; return }
 
     # ── list ──────────────────────────────────────────────────────────────────
     if ($subcmd -eq 'list') {
@@ -2667,7 +2719,102 @@ function Invoke-SshDispatch([string]$subcmd, [string]$arg1 = "") {
         Write-Host ""; exit 1
     }
 
-    # ── generate mode ─────────────────────────────────────────────────────────
+    # ── no-arg: scan network for SSH hosts + key exchange option ────────────────
+    Write-Host ""; wh "  killport ssh — Scan Network" Cyan; Write-Rule; Write-Host ""
+
+    $sshEntries = [System.Collections.Generic.List[PSCustomObject]]::new()
+    $idx        = 0
+
+    # 1. Saved SSH connections
+    foreach ($e in (Get-SshKnown)) {
+        $idx++
+        $sshEntries.Add([PSCustomObject]@{ ip=$e.ip; user=$e.user; name=$e.name; saved=$true })
+        wh "  $($idx.ToString().PadLeft(2))" White -nl:$false
+        wh "  ★ " Green -nl:$false; wh $e.name.PadRight(20) White -nl:$false
+        wh ("  {0,-14}" -f $e.user) Cyan -nl:$false
+        wh "  $($e.ip)" DarkGray
+    }
+    if ($idx -gt 0) { Write-Host "" }
+
+    # 2. Live network scan — VPN-aware via Get-LocalSubnet
+    $base  = Get-LocalSubnet
+    $isVpn = ($null -ne (Get-NetAdapter -ErrorAction SilentlyContinue |
+        Where-Object { $_.Status -eq 'Up' -and $_.InterfaceDescription -match 'TAP|tun|OpenVPN|WireGuard' } |
+        Select-Object -First 1))
+    if (-not $base) { wh "  Could not determine subnet." Yellow; Write-Host "" }
+    else {
+        wh "  Scanning ${base}.0/24 for SSH (port 22) ..." DarkGray; Write-Host ""
+        $timeout = if ($isVpn) { 2000 } else { 500 }
+        $tasks   = [System.Collections.Generic.List[System.Threading.Tasks.Task]]::new()
+        $ips     = [System.Collections.Generic.List[string]]::new()
+        1..254 | ForEach-Object {
+            $ip_ = "${base}.$_"
+            $tc  = New-Object System.Net.Sockets.TcpClient
+            $ips.Add($ip_)
+            $tasks.Add($tc.ConnectAsync($ip_, 22))
+        }
+        try { [System.Threading.Tasks.Task]::WaitAll($tasks.ToArray(), ($timeout + 500)) } catch {}
+        $savedIps = $sshEntries | ForEach-Object { $_.ip }
+        for ($i = 0; $i -lt $tasks.Count; $i++) {
+            if ($tasks[$i].Status -eq [System.Threading.Tasks.TaskStatus]::RanToCompletion -and
+                -not $tasks[$i].IsFaulted) {
+                $lip = $ips[$i]
+                if ($savedIps -contains $lip) { continue }
+                $idx++
+                $sshEntries.Add([PSCustomObject]@{ ip=$lip; user=''; name=''; saved=$false })
+                wh "  $($idx.ToString().PadLeft(2))" White -nl:$false
+                Write-Host ("  {0,-22}  {1}" -f '?', $lip)
+            }
+        }
+        Write-Host ""
+    }
+
+    if ($sshEntries.Count -eq 0) {
+        wh "  No SSH hosts found." DarkGray; Write-Host ""
+        wh "  For key exchange: killport ssh share" DarkGray; Write-Host ""; return
+    }
+
+    wh "  Pick a number to connect, or 'x' for key exchange:" DarkGray
+    Write-Host -NoNewline "  -> "; $sel = (Read-Host).Trim()
+
+    if ($sel -eq 'x' -or $sel -eq 'X') {
+        Invoke-SshDispatch 'share'
+        return
+    }
+
+    if ($sel -match '^\d+$') {
+        $n = [int]$sel
+        if ($n -ge 1 -and $n -le $sshEntries.Count) {
+            $e = $sshEntries[$n - 1]
+            Write-Host ""
+            if ($e.saved) {
+                wh "  Connecting to $($e.name) ($($e.user)@$($e.ip))..." DarkGray; Write-Host ""
+                & ssh -i $keyFile "$($e.user)@$($e.ip)"
+            } else {
+                wh "  Connecting to $($e.ip)..." DarkGray; Write-Host ""
+                & ssh -i $keyFile $e.ip
+                if ($LASTEXITCODE -ne 0) {
+                    Write-Host ""; wh "  Connection failed." Red
+                    wh "  You may need to exchange keys first — run: killport ssh share" DarkGray
+                }
+                Write-Host ""
+                $saveName = (Read-Host "  Save as (leave blank to skip)").Trim()
+                if ($saveName) {
+                    $saveUser = (Read-Host "  Username (leave blank for $env:USERNAME)").Trim()
+                    if (-not $saveUser) { $saveUser = $env:USERNAME }
+                    Save-SshKnown $saveName $saveUser $e.ip
+                    wh "  Saved as '$saveName'. Use: killport ssh $saveName" Green; Write-Host ""
+                }
+            }
+        } else { wh "  Invalid selection." Red; Write-Host "" }
+    } else { wh "  Invalid selection." Red; Write-Host "" }
+}
+
+function Invoke-SshShare {
+    $kpDir   = "$env:USERPROFILE\.killport"
+    $keyFile = "$kpDir\id_ed25519"
+    $pubFile = "$kpDir\id_ed25519.pub"
+
     Write-Host ""; wh "  killport ssh — Key Exchange" Cyan; Write-Rule; Write-Host ""
 
     if (-not (Test-Path $kpDir)) { New-Item -ItemType Directory -Path $kpDir -Force | Out-Null }
@@ -2701,7 +2848,6 @@ function Invoke-SshDispatch([string]$subcmd, [string]$arg1 = "") {
     wh "  the connection and enable SSH in both directions." DarkGray; Write-Host ""
     Write-Host "  Return token (ks:...) or Enter to skip -> " -NoNewline
     $returnToken = (Read-Host).Trim()
-    # Accept full "killport ssh ks:..." paste — extract just the ks: token
     if ($returnToken -match '(ks:[A-Za-z0-9+/=]+)') { $returnToken = $matches[1] }
     if ($returnToken -match '^ks:') {
         Invoke-SshDispatch $returnToken
@@ -2709,7 +2855,7 @@ function Invoke-SshDispatch([string]$subcmd, [string]$arg1 = "") {
         Write-Host ""
         wh "  Skipped. Once they accept, you can SSH in with:" DarkGray
         wh "  ssh -i ~/.killport/id_ed25519 <their-user>@<their-ip>" Cyan; Write-Host ""
-        wh "  Or run 'killport ssh' again to exchange tokens." DarkGray; Write-Host ""
+        wh "  Or run 'killport ssh share' again to exchange tokens." DarkGray; Write-Host ""
     }
 }
 
