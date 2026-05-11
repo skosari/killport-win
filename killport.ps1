@@ -6,7 +6,7 @@
     [Parameter(Mandatory=$false, Position=4)] [string]$Arg4
 )
 
-$VERSION = "1.10.63"
+$VERSION = "1.10.64"
 $REPO    = "skosari/killport-win"
 $RAW     = "https://raw.githubusercontent.com/$REPO/main"
 
@@ -2240,6 +2240,12 @@ function Forward-Port($localPort, $target) {
     }
 }
 
+# ── OpenVPN ──────────────────────────────────────────────────────────────────
+$OVPN_DIR          = "$env:APPDATA\killport\ovpn"
+$OVPN_PROFILES_DIR = "$OVPN_DIR\profiles"
+$OVPN_CERTS_DIR    = "$OVPN_DIR\certs"
+$OVPN_KNOWN_FILE   = "$OVPN_DIR\ovpn_known"
+
 # ── Wake on LAN ──────────────────────────────────────────────────────────────
 
 $WOL_HOSTS_FILE = "$env:APPDATA\killport\wol_hosts"
@@ -3072,6 +3078,482 @@ function Invoke-VncDispatch([string]$subcmd, [string]$arg1 = "", [string]$arg2 =
             wh "  Saved as '$saveName'. Use: killport vnc $saveName" Green; Write-Host ""
         }
     }
+}
+
+# ── OpenVPN ──────────────────────────────────────────────────────────────────
+
+function Invoke-OvpnDispatch([string]$subcmd, [string]$arg1 = "", [string]$arg2 = "", [string]$arg3 = "") {
+
+    # ── helpers ───────────────────────────────────────────────────────────────
+
+    function Get-OvpnKnown {
+        if (-not (Test-Path $OVPN_KNOWN_FILE)) { return @() }
+        Get-Content $OVPN_KNOWN_FILE | Where-Object { $_ -match '\S' -and -not $_.StartsWith('#') } | ForEach-Object {
+            $p = $_ -split '\|'
+            if ($p.Count -ge 3) {
+                [PSCustomObject]@{ name=$p[0]; host=$p[1]; file=$p[2] }
+            }
+        }
+    }
+
+    function Save-OvpnKnown([string]$name, [string]$host, [string]$file) {
+        $dir = $OVPN_DIR
+        if (-not (Test-Path $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
+        $existing = @()
+        if (Test-Path $OVPN_KNOWN_FILE) {
+            $existing = Get-Content $OVPN_KNOWN_FILE | Where-Object { $_ -notmatch "^\s*$" -and ($_ -split '\|')[0] -ne $name }
+        }
+        $existing += "$name|$host|$file"
+        $existing | Set-Content $OVPN_KNOWN_FILE
+    }
+
+    function Get-OvpnExe {
+        $candidates = @(
+            "C:\Program Files\OpenVPN\bin\openvpn.exe",
+            "C:\Program Files (x86)\OpenVPN\bin\openvpn.exe"
+        )
+        foreach ($c in $candidates) {
+            if (Test-Path $c) { return $c }
+        }
+        $found = Get-Command openvpn.exe -ErrorAction SilentlyContinue
+        if ($found) { return $found.Source }
+        return $null
+    }
+
+    function Get-OvpnStatus {
+        $proc = Get-Process openvpn -ErrorAction SilentlyContinue | Select-Object -First 1
+        if (-not $proc) { return [PSCustomObject]@{ connected=$false; tunIp=''; remoteLan='' } }
+        # Look for TAP/tun adapter
+        $tapAdapter = Get-NetAdapter -ErrorAction SilentlyContinue |
+            Where-Object { $_.Status -eq 'Up' -and $_.InterfaceDescription -match 'TAP|tun|OpenVPN' } |
+            Select-Object -First 1
+        $tunIp = ''
+        $remoteLan = ''
+        if ($tapAdapter) {
+            $tunIp = (Get-NetIPAddress -InterfaceIndex $tapAdapter.InterfaceIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue |
+                      Select-Object -First 1).IPAddress
+            $route = Get-NetRoute -InterfaceIndex $tapAdapter.InterfaceIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue |
+                Where-Object { $_.DestinationPrefix -notmatch '^(0\.0\.0\.0|128\.0\.0\.0|169\.)' -and $_.NextHop -ne '0.0.0.0' } |
+                Select-Object -First 1
+            if ($route) { $remoteLan = $route.DestinationPrefix }
+        }
+        return [PSCustomObject]@{ connected=$true; tunIp=$tunIp; remoteLan=$remoteLan; adapterName=if($tapAdapter){$tapAdapter.Name}else{''} }
+    }
+
+    function Show-OvpnStatus {
+        $s = Get-OvpnStatus
+        if ($s.connected) {
+            wh "  Status: " DarkGray -nl:$false; wh "● Connected" Green -nl:$false
+            $detail = if ($s.tunIp) { "  ($($s.adapterName)  $($s.tunIp)" + $(if ($s.remoteLan) { "  →  $($s.remoteLan)" }) + ")" } else { "" }
+            wh $detail DarkGray
+        } else {
+            wh "  Status: " DarkGray -nl:$false; wh "○ Not connected" DarkGray
+        }
+    }
+
+    # ── ensure dirs ───────────────────────────────────────────────────────────
+    foreach ($d in @($OVPN_DIR, $OVPN_PROFILES_DIR, $OVPN_CERTS_DIR)) {
+        if (-not (Test-Path $d)) { New-Item -ItemType Directory -Path $d -Force | Out-Null }
+    }
+
+    # ── status ────────────────────────────────────────────────────────────────
+    if ($subcmd -eq 'status') {
+        Write-Host ""; wh "  killport ovpn — Status" Cyan; Write-Rule; Write-Host ""
+        Show-OvpnStatus
+        Write-Host ""; return
+    }
+
+    # ── disconnect ────────────────────────────────────────────────────────────
+    if ($subcmd -eq 'disconnect') {
+        $procs = Get-Process openvpn -ErrorAction SilentlyContinue
+        if ($procs) {
+            $procs | Stop-Process -Force
+            wh "`n  Disconnected — OpenVPN process stopped." Green; Write-Host ""
+        } else {
+            wh "`n  No active OpenVPN process found." Yellow; Write-Host ""
+        }
+        return
+    }
+
+    # ── list ──────────────────────────────────────────────────────────────────
+    if ($subcmd -eq 'list') {
+        Write-Host ""; wh "  killport ovpn — Saved Profiles" Cyan; Write-Rule; Write-Host ""
+        $known = Get-OvpnKnown
+        if ($known.Count -eq 0) {
+            wh "  No saved profiles yet." DarkGray
+            wh "  Run 'killport ovpn import <name> <file.ovpn>' to add one." DarkGray
+            Write-Host ""; return
+        }
+        foreach ($e in $known) {
+            wh "  ★ " Green -nl:$false
+            wh ("{0,-20}" -f $e.name) White -nl:$false
+            wh "  $($e.host)" DarkGray
+        }
+        Write-Host ""
+        wh "  $($known.Count) profile(s)  ·  'killport ovpn <name>' to connect  ·  'killport ovpn delete <name>' to remove" DarkGray
+        Write-Host ""; return
+    }
+
+    # ── delete ────────────────────────────────────────────────────────────────
+    if ($subcmd -eq 'delete' -or $subcmd -eq 'remove') {
+        if (-not $arg1) { wh "`n  Usage: killport ovpn delete <name>" Red; Write-Host ""; exit 1 }
+        if (Test-Path $OVPN_KNOWN_FILE) {
+            $lines = @(Get-Content $OVPN_KNOWN_FILE)
+            $entry = $lines | Where-Object { ($_ -split '\|')[0] -eq $arg1 } | Select-Object -First 1
+            if ($entry) {
+                # Also remove the profile file if it exists
+                $entryFile = ($entry -split '\|')[2]
+                $fullPath = if ([System.IO.Path]::IsPathRooted($entryFile)) { $entryFile } else { "$OVPN_DIR\$entryFile" }
+                if (Test-Path $fullPath) { Remove-Item $fullPath -Force -ErrorAction SilentlyContinue }
+                $filtered = @($lines | Where-Object { ($_ -split '\|')[0] -ne $arg1 })
+                if ($filtered.Count -eq 0) { Clear-Content $OVPN_KNOWN_FILE } else { Set-Content $OVPN_KNOWN_FILE -Value $filtered }
+                wh "`n  Removed '$arg1'." Green; Write-Host ""
+            } else { wh "`n  No saved profile named '$arg1'." Yellow; Write-Host "" }
+        } else { wh "`n  No saved profiles file found." Yellow; Write-Host "" }
+        return
+    }
+
+    # ── import ────────────────────────────────────────────────────────────────
+    if ($subcmd -eq 'import') {
+        if (-not $arg1 -or -not $arg2) { wh "`n  Usage: killport ovpn import <name> <file.ovpn>" Red; Write-Host ""; exit 1 }
+        if (-not (Test-Path $arg2)) { wh "`n  File not found: $arg2" Red; Write-Host ""; exit 1 }
+        $destFile = "$OVPN_PROFILES_DIR\$arg1.ovpn"
+        Copy-Item $arg2 $destFile -Force
+        # Try to extract remote host from config
+        $remoteHost = ''
+        $remotePort = '1194'
+        $content = Get-Content $destFile
+        foreach ($line in $content) {
+            if ($line -match '^\s*remote\s+(\S+)\s*(\d+)?') {
+                $remoteHost = $Matches[1]
+                if ($Matches[2]) { $remotePort = $Matches[2] }
+                break
+            }
+        }
+        $hostPort = if ($remoteHost) { "${remoteHost}:${remotePort}" } else { 'unknown:1194' }
+        Save-OvpnKnown $arg1 $hostPort "profiles\$arg1.ovpn"
+        Write-Host ""
+        wh "  Imported '$arg1'" Green
+        wh "  Profile: $destFile" DarkGray
+        wh "  Remote:  $hostPort" DarkGray
+        wh "  Connect: killport ovpn $arg1" DarkGray
+        Write-Host ""; return
+    }
+
+    # ── server subcommands ────────────────────────────────────────────────────
+    if ($subcmd -eq 'server') {
+        $svcCmd = $arg1   # install, newclient, clients, revoke, start, stop, ""
+
+        # ── server status / default ──────────────────────────────────────────
+        if (-not $svcCmd) {
+            Write-Host ""; wh "  killport ovpn server — Status" Cyan; Write-Rule; Write-Host ""
+            $svc = Get-Service OpenVPNService -ErrorAction SilentlyContinue
+            if ($svc) {
+                $color = if ($svc.Status -eq 'Running') { 'Green' } else { 'Yellow' }
+                wh "  Service:  " DarkGray -nl:$false; wh $svc.Status $color
+            } else {
+                wh "  OpenVPN service not found." Yellow
+                wh "  Run 'killport ovpn server install' to install OpenVPN." DarkGray
+            }
+            $ovpnExe = Get-OvpnExe
+            if ($ovpnExe) {
+                $ver = & $ovpnExe --version 2>&1 | Select-Object -First 1
+                wh "  Binary:   " DarkGray -nl:$false; wh $ovpnExe DarkGray
+                wh "  Version:  " DarkGray -nl:$false; wh ($ver -replace 'OpenVPN\s+','') DarkGray
+            }
+            Write-Host ""; return
+        }
+
+        # ── server install ───────────────────────────────────────────────────
+        if ($svcCmd -eq 'install') {
+            Write-Host ""
+            wh "  killport ovpn server install" Cyan; Write-Rule; Write-Host ""
+            # Check admin
+            $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+            if (-not $isAdmin) {
+                wh "  This command requires Administrator privileges." Red
+                wh "  Please run PowerShell as Administrator and retry." DarkGray
+                Write-Host ""; exit 1
+            }
+            # Install OpenVPN via winget
+            wh "  Installing OpenVPN via winget..." DarkGray; Write-Host ""
+            winget install OpenVPN.OpenVPN --accept-package-agreements --accept-source-agreements
+            $ovpnExe = Get-OvpnExe
+            if (-not $ovpnExe) {
+                wh "  OpenVPN not found after install. Please install manually." Red
+                Write-Host ""; exit 1
+            }
+            # Init PKI with EasyRSA
+            $easyrsa = "C:\Program Files\OpenVPN\easy-rsa\EasyRSA-Start.bat"
+            $pkiDir  = $OVPN_CERTS_DIR
+            wh "  Initializing PKI at $pkiDir ..." DarkGray; Write-Host ""
+            if (-not (Test-Path "$pkiDir\pki")) {
+                $initScript = @"
+init-pki
+build-ca nopass
+build-server-full server nopass
+build-dh
+openvpn --genkey secret "$pkiDir\ta.key"
+"@
+                $initScript | & $easyrsa
+            }
+            # Write server config
+            $serverConf = "$env:APPDATA\killport\ovpn\server.ovpn"
+            if (-not (Test-Path $serverConf)) {
+                $ourIp = (Get-OurIp)
+                @"
+port 1194
+proto udp
+dev tun
+ca "$pkiDir\pki\ca.crt"
+cert "$pkiDir\pki\issued\server.crt"
+key "$pkiDir\pki\private\server.key"
+dh "$pkiDir\pki\dh.pem"
+tls-auth "$pkiDir\ta.key" 0
+server 10.8.0.0 255.255.0.0
+push "redirect-gateway def1"
+push "dhcp-option DNS 8.8.8.8"
+keepalive 10 120
+cipher AES-256-CBC
+persist-key
+persist-tun
+status "$pkiDir\openvpn-status.log"
+verb 3
+"@ | Set-Content $serverConf
+                wh "  Server config written: $serverConf" DarkGray
+            }
+            wh "  Starting OpenVPN service..." DarkGray
+            Start-Service OpenVPNService -ErrorAction SilentlyContinue
+            wh "  OpenVPN server installed and started." Green; Write-Host ""; return
+        }
+
+        # ── server newclient ─────────────────────────────────────────────────
+        if ($svcCmd -eq 'newclient') {
+            $clientName = $arg2
+            if (-not $clientName) { wh "`n  Usage: killport ovpn server newclient <name>" Red; Write-Host ""; exit 1 }
+            $pkiDir = $OVPN_CERTS_DIR
+            $easyrsa = "C:\Program Files\OpenVPN\easy-rsa\EasyRSA-Start.bat"
+            wh "`n  Generating client cert for '$clientName'..." DarkGray; Write-Host ""
+            "build-client-full $clientName nopass" | & $easyrsa
+            # Assemble inline .ovpn
+            $caCrt     = Get-Content "$pkiDir\pki\ca.crt" -Raw
+            $clientCrt = Get-Content "$pkiDir\pki\issued\$clientName.crt" -Raw
+            $clientKey = Get-Content "$pkiDir\pki\private\$clientName.key" -Raw
+            $taKey     = Get-Content "$pkiDir\ta.key" -Raw
+            $ourIp     = (Get-OurIp)
+            $ovpnOut   = "$OVPN_PROFILES_DIR\$clientName.ovpn"
+            @"
+client
+dev tun
+proto udp
+remote $ourIp 1194
+resolv-retry infinite
+nobind
+persist-key
+persist-tun
+remote-cert-tls server
+cipher AES-256-CBC
+verb 3
+key-direction 1
+<ca>
+$caCrt</ca>
+<cert>
+$clientCrt</cert>
+<key>
+$clientKey</key>
+<tls-auth>
+$taKey</tls-auth>
+"@ | Set-Content $ovpnOut
+            wh "  Client profile saved: $ovpnOut" Green; Write-Host ""; return
+        }
+
+        # ── server clients ───────────────────────────────────────────────────
+        if ($svcCmd -eq 'clients') {
+            $pkiDir = $OVPN_CERTS_DIR
+            $issuedDir = "$pkiDir\pki\issued"
+            Write-Host ""; wh "  Issued Clients" Cyan; Write-Rule; Write-Host ""
+            if (-not (Test-Path $issuedDir)) {
+                wh "  No PKI found. Run 'killport ovpn server install' first." Yellow
+                Write-Host ""; return
+            }
+            $certs = Get-ChildItem $issuedDir -Filter "*.crt" | Where-Object { $_.Name -ne 'server.crt' }
+            if ($certs.Count -eq 0) {
+                wh "  No client certificates issued yet." DarkGray
+                wh "  Run 'killport ovpn server newclient <name>' to create one." DarkGray
+            } else {
+                foreach ($c in $certs) {
+                    wh "  ★ " Green -nl:$false; wh $c.BaseName White
+                }
+            }
+            Write-Host ""; return
+        }
+
+        # ── server revoke ────────────────────────────────────────────────────
+        if ($svcCmd -eq 'revoke') {
+            $clientName = $arg2
+            if (-not $clientName) { wh "`n  Usage: killport ovpn server revoke <name>" Red; Write-Host ""; exit 1 }
+            $pkiDir = $OVPN_CERTS_DIR
+            $easyrsa = "C:\Program Files\OpenVPN\easy-rsa\EasyRSA-Start.bat"
+            wh "`n  Revoking '$clientName'..." DarkGray; Write-Host ""
+            "revoke $clientName`ngen-crl" | & $easyrsa
+            wh "  Revoked '$clientName'." Green; Write-Host ""; return
+        }
+
+        # ── server start ──────────────────────────────────────────────────────
+        if ($svcCmd -eq 'start') {
+            Start-Service OpenVPNService -ErrorAction SilentlyContinue
+            $svc = Get-Service OpenVPNService -ErrorAction SilentlyContinue
+            $state = if ($svc) { $svc.Status } else { 'not found' }
+            wh "`n  OpenVPN service: $state" $(if ($state -eq 'Running') { 'Green' } else { 'Yellow' }); Write-Host ""; return
+        }
+
+        # ── server stop ───────────────────────────────────────────────────────
+        if ($svcCmd -eq 'stop') {
+            Stop-Service OpenVPNService -ErrorAction SilentlyContinue
+            wh "`n  OpenVPN service stopped." Green; Write-Host ""; return
+        }
+
+        wh "`n  Unknown server subcommand: $svcCmd" Yellow
+        wh "  Usage: killport ovpn server [install|newclient|clients|revoke|start|stop]" DarkGray
+        Write-Host ""; return
+    }
+
+    # ── connect by name ───────────────────────────────────────────────────────
+    if ($subcmd -and $subcmd -ne 'server') {
+        $known = Get-OvpnKnown
+        $entry = $known | Where-Object { $_.name -eq $subcmd } | Select-Object -First 1
+        if ($entry) {
+            $cfgPath = if ([System.IO.Path]::IsPathRooted($entry.file)) { $entry.file } else { "$OVPN_DIR\$($entry.file)" }
+            if (-not (Test-Path $cfgPath)) {
+                wh "`n  Profile file not found: $cfgPath" Red; Write-Host ""; exit 1
+            }
+            Write-Host ""; wh "  killport ovpn  $subcmd  ($($entry.host))" Cyan; Write-Rule; Write-Host ""
+            $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+            if (-not $isAdmin) {
+                wh "  OpenVPN requires Administrator privileges." Yellow
+                wh "  Please run: Start-Process powershell -Verb RunAs -ArgumentList 'killport ovpn $subcmd'" DarkGray
+                Write-Host ""; exit 1
+            }
+            $ovpnExe = Get-OvpnExe
+            if (-not $ovpnExe) {
+                wh "  openvpn.exe not found." Red
+                wh "  Install: winget install OpenVPN.OpenVPN" DarkGray
+                Write-Host ""; exit 1
+            }
+            wh "  Connecting via $cfgPath" DarkGray
+            wh "  Press Ctrl+C to disconnect." DarkGray; Write-Host ""
+            & $ovpnExe --config $cfgPath
+            return
+        }
+        wh "`n  No saved profile named '$subcmd'." Yellow
+        wh "  Run 'killport ovpn list' to see saved profiles." DarkGray; Write-Host ""; return
+    }
+
+    # ── no-arg: show status + saved profiles + scan + pick ───────────────────
+    Write-Host ""; wh "  killport ovpn — VPN" Cyan; Write-Rule; Write-Host ""
+
+    Show-OvpnStatus
+    Write-Host ""
+
+    $ovpnEntries = [System.Collections.Generic.List[string]]::new()   # profile name or IP
+    $ovpnFiles   = [System.Collections.Generic.List[string]]::new()   # config file paths
+    $ovpnIps     = [System.Collections.Generic.List[string]]::new()   # for dedup
+    $idx         = 0
+
+    # 1. Saved profiles
+    foreach ($e in (Get-OvpnKnown)) {
+        $idx++
+        $ovpnEntries.Add($e.name)
+        $ovpnFiles.Add($e.file)
+        $hostOnly = ($e.host -split ':')[0]
+        $ovpnIps.Add($hostOnly)
+        wh "  $($idx.ToString().PadLeft(2))" White -nl:$false
+        wh "  ★ " Green -nl:$false; wh $e.name.PadRight(20) White -nl:$false
+        wh "  $($e.host)" DarkGray
+    }
+    if ($idx -gt 0) { Write-Host "" }
+
+    # 2. Scan for port 1194 on local network
+    $base = (Get-OurIp) -replace '\.\d+$',''
+    wh "  Scanning ${base}.0/24 for port 1194 ..." DarkGray; Write-Host ""
+
+    $scanResults = [System.Collections.Generic.List[string]]::new()
+    $pingObjs    = [System.Collections.Generic.List[System.Net.NetworkInformation.Ping]]::new()
+    $pingTasks   = [System.Collections.Generic.List[System.Threading.Tasks.Task]]::new()
+    $pingIps     = [System.Collections.Generic.List[string]]::new()
+
+    1..254 | ForEach-Object {
+        $ip_ = "${base}.$_"
+        $p   = New-Object System.Net.NetworkInformation.Ping
+        $pingObjs.Add($p); $pingTasks.Add($p.SendPingAsync($ip_, 500)); $pingIps.Add($ip_)
+    }
+    [System.Threading.Tasks.Task]::WaitAll($pingTasks.ToArray())
+    $pingObjs | ForEach-Object { $_.Dispose() }
+
+    $localIp = (Get-OurIp)
+    foreach ($line in (arp -a 2>$null)) {
+        if ($line -match "^\s+($([regex]::Escape($base))\.\d+)\s+((?:[\da-f]{2}[:-]){5}[\da-f]{2})\s+dynamic") {
+            $lip = $Matches[1]
+            if ($lip -eq $localIp -or $ovpnIps -contains $lip) { continue }
+            # Quick TCP port check for 1194
+            try {
+                $tcp = New-Object System.Net.Sockets.TcpClient
+                $task = $tcp.ConnectAsync($lip, 1194)
+                $done = $task.Wait(400)
+                $open = $done -and $task.IsCompletedSuccessfully
+                $tcp.Dispose()
+            } catch { $open = $false }
+            if (-not $open) {
+                # Try UDP: just add any host that responded to ping
+                $pingIdx = $pingIps.IndexOf($lip)
+                $open = ($pingIdx -ge 0 -and $pingTasks[$pingIdx].Result.Status -eq [System.Net.NetworkInformation.IPStatus]::Success)
+            }
+            if ($open) {
+                $idx++
+                $ovpnEntries.Add($lip); $ovpnFiles.Add(''); $ovpnIps.Add($lip)
+                $scanResults.Add($lip)
+                wh "  $($idx.ToString().PadLeft(2))" White -nl:$false
+                Write-Host ("  {0,-22}  {1}" -f '?', "${lip}:1194")
+            }
+        }
+    }
+    Write-Host ""
+
+    if ($idx -eq 0) { wh "  No VPN servers or profiles found." DarkGray; Write-Host ""; return }
+
+    $pick = (Read-Host "  Pick a number to connect, 'i' to import a .ovpn file, or 's' for server setup").Trim()
+
+    if ($pick -eq 'i') {
+        $iFile = (Read-Host "  Path to .ovpn file").Trim()
+        $iName = (Read-Host "  Save as name").Trim()
+        if ($iFile -and $iName) { Invoke-OvpnDispatch 'import' $iName $iFile }
+        return
+    }
+    if ($pick -eq 's') { Invoke-OvpnDispatch 'server'; return }
+
+    if (-not ($pick -match '^\d+$') -or [int]$pick -lt 1 -or [int]$pick -gt $idx) {
+        wh "  Invalid selection." Red; Write-Host ""; exit 1
+    }
+    $pickIdx   = [int]$pick - 1
+    $chosen    = $ovpnEntries[$pickIdx]
+    $chosenFile = $ovpnFiles[$pickIdx]
+
+    # If it's a scan result (no file), prompt for .ovpn import
+    if (-not $chosenFile) {
+        $chosenIp = $chosen
+        wh "  No saved profile for $chosenIp — import a .ovpn file to connect." Yellow
+        $iFile = (Read-Host "  Path to .ovpn file (leave blank to skip)").Trim()
+        if (-not $iFile) { Write-Host ""; return }
+        $iName = (Read-Host "  Save as name").Trim()
+        if ($iName) {
+            Invoke-OvpnDispatch 'import' $iName $iFile
+            Invoke-OvpnDispatch $iName
+        }
+        return
+    }
+
+    # Connect by saved profile name
+    Invoke-OvpnDispatch $chosen
 }
 
 # ── shutdown ─────────────────────────────────────────────────────────────────
@@ -3941,6 +4423,21 @@ if (-not $Command) {
     Write-Host "  killport vnc list               show saved VNC hosts"
     Write-Host "  killport vnc delete <name>      remove a saved VNC host"
     Write-Host ""
+    Write-Host "  *** OPENVPN ***"
+    Write-Host "  killport ovpn                        connect to saved VPN or scan for servers"
+    Write-Host "  killport ovpn <name>                 connect using saved profile by name"
+    Write-Host "  killport ovpn disconnect             kill active openvpn process"
+    Write-Host "  killport ovpn status                 show tunnel info (connected/not, tunnel IP)"
+    Write-Host "  killport ovpn import <name> <file>   import a .ovpn file and save profile"
+    Write-Host "  killport ovpn list                   list saved profiles"
+    Write-Host "  killport ovpn delete <name>          remove a saved profile"
+    Write-Host "  killport ovpn server                 show server status / install prompt"
+    Write-Host "  killport ovpn server install         install openvpn + easy-rsa, start service"
+    Write-Host "  killport ovpn server newclient <n>   generate client cert + .ovpn file"
+    Write-Host "  killport ovpn server clients         list issued clients"
+    Write-Host "  killport ovpn server revoke <name>   revoke a client cert"
+    Write-Host "  killport ovpn server start/stop      start or stop openvpn server service"
+    Write-Host ""
     Write-Host "  *** WAKE ON LAN ***"
     Write-Host "  killport wol               scan network and wake or save host"
     Write-Host "  killport wol <name>        wake a saved host by name"
@@ -4009,6 +4506,7 @@ switch ($Command.ToLower()) {
     "setup"       { Invoke-SetupWizard }
     "shutdown"    { Invoke-ShutdownDispatch $Port $Extra }
     "restart"     { Invoke-RestartDispatch $Port }
+    "ovpn"        { Invoke-OvpnDispatch $Port $Extra $Arg3 $Arg4 }
     "wol"         { Invoke-WolDispatch $Port $Extra $Arg3 $Arg4 }
     "status"      { if (-not $Port) { Write-Host "Usage: killport status <port>" } else { Status-Port $Port } }
     "open"        { if (-not $Port) { Write-Host "Usage: killport open <port>" } else { Open-Port $Port } }
